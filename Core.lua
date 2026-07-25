@@ -1049,7 +1049,7 @@ end
 local GECStore = LibStub("GECStore-1.0")
 local fishStoreHandle
 local function fishStore()
-  fishStoreHandle = fishStoreHandle or GECStore.RegisterStore({ sv = "SBFData", schemaVersion = 2, src = "SBF",
+  fishStoreHandle = fishStoreHandle or GECStore.RegisterStore({ sv = "SBFData", schemaVersion = 3, src = "SBF",
     build = function() return SBF and SBF.BUILD end })
   return fishStoreHandle
 end
@@ -1153,9 +1153,14 @@ local function migrateFishlogWipe()
   local hasOldStream = d.streams and d.streams.fishlog ~= nil
   if (d.version or 1) >= 2 and not hasOldStream then return end   -- already migrated
   d.streams = d.streams or {}
-  d.streams.fishlog = nil   -- the dead stream name
-  d.streams.events  = nil   -- clean slate (drops any increment-1 test events)
-  d.streams.markers = nil
+  d.streams.fishlog = nil   -- the dead stream name (decommissioned — not a seq-stream; just drop it)
+  -- events/markers are live seq-streams: clear them through the deletion API so `base` advances (GECStore
+  -- MINOR 25). lib.Truncate is the handle-free variant — this runs BEFORE RegisterStore, so there's no
+  -- store handle yet. Direct nil of a seq-stream is forbidden (seq spec §4); fall back only if the lib
+  -- somehow isn't loaded this early.
+  local GS = LibStub and LibStub:GetLibrary("GECStore-1.0", true)
+  if GS and GS.Truncate then GS.Truncate("SBFData", "events"); GS.Truncate("SBFData", "markers")
+  else d.streams.events, d.streams.markers = nil, nil end
   d.sessions        = nil
   d._open           = nil   -- controller's open-session pointer
   d._sidelined      = nil
@@ -1164,6 +1169,22 @@ local function migrateFishlogWipe()
   d.version         = 2
 end
 SBF.MigrateFishlogWipe = migrateFishlogWipe
+
+-- Increment 3 wipe (seq-identity rebaseline — spec 2026-07-24 §Migration, coordinated rollout 2026-07-25):
+-- the streams restart EMPTY so every record is born with its per-stream `seq` (no dual-key, no backfill).
+-- Routed through the deletion API so `base` lands cleanly at 1 (never nil a seq-stream — chain-of-deletion
+-- §4). PRESERVED: the frozen session records (d.sessions), the all-time rollup (db.stats), and the learned
+-- item catalog (db.items) — none of them live under streams. Must run BEFORE the first fishStore() call
+-- (RegisterStore overwrites SBFData.version to the new schemaVersion, which would mask the crossing).
+local function migrateSeqRebaseline()
+  local d = rawget(_G, "SBFData")
+  if not d or (d.version or 1) >= 3 then return end   -- fresh install: RegisterStore creates version 3 clean
+  local GS = LibStub and LibStub:GetLibrary("GECStore-1.0", true)
+  if GS and GS.Truncate then GS.Truncate("SBFData", "events"); GS.Truncate("SBFData", "markers") end
+  d._open, d._sidelined = nil, nil          -- controller pointers reference wiped markers
+  d.liveSession, d.sidelined = nil, nil
+  d.version = 3
+end
 
 -- Fishing skill-ups in the Log: ride GECStore's OnSkillIncrease feed (it scrapes CHAT_MSG_SKILL and fires a
 -- self-identifying payload — lineID/skillName/newLevel/delta; same feed Haul's Skills tracker uses). We keep
@@ -2245,6 +2266,8 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     -- increment 2: wipe the old streams.fishlog (+ increment-1 session scaffolding) so schema 2 starts clean.
     -- MUST run before the first fishStore()/session init below (RegisterStore overwrites SBFData.version to 2).
     migrateFishlogWipe()
+    -- increment 3: seq-identity rebaseline (coordinated rollout) — streams restart born-with-seq.
+    migrateSeqRebaseline()
     ApplyDefaults(SBFDB, DB_DEFAULTS)
     SBFDB.themePreset = SBFDB.themePreset or "everforest"  -- GECTheme per-addon palette (default = everforest)
     -- one-time profile migration: fold the existing SBFDB.slots tree into a single "Default" profile
