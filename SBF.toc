@@ -3,7 +3,7 @@
 ## Notes: Single-Button Fishing. Keybound item/macro slots (food, drink, lure, boat, cast, interact) — built for combo keys (modifier combos supported).
 ## Category: GEC
 ## Author: Goblin Engineering Company
-## Version: 2026.07.25.2
+## Version: 2026.07.25.3
 ## X-GEC-Channel: public
 ## SavedVariables: SBFDB, SBFData, GECStoreDB
 ## X-Category: Misc
