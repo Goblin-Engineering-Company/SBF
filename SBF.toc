@@ -1,10 +1,12 @@
 ## Interface: 120007
-## Title: SBF
-## Notes: Single-Button Fishing. Keybound item/macro slots (food, drink, lure, boat, cast, interact) — built for combo keys (modifier combos supported).
+## Title: Single-Button Fishing
+## Notes: One key runs the whole fishing loop. Keybound item/macro slots (food, drink, lure, boat, cast, interact), built for combo keys (modifier combos supported).
 ## Category: GEC
 ## Author: Goblin Engineering Company
-## Version: 2026.07.26.1
+## Version: 2026.08.04.7
 ## X-GEC-Channel: public
+## X-WoWI-ID: 27173
+## X-Curse-Project-ID: 1625876
 ## SavedVariables: SBFDB, SBFData, GECStoreDB
 ## X-Category: Misc
 
@@ -36,3 +38,4 @@ Help.lua
 OptionsWidgets.lua
 Options.lua
 Welcome.lua
+Uplink.lua

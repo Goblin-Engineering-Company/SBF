@@ -35,23 +35,55 @@ function SBF.EquippedPole()
   return nil
 end
 
--- If the ACTIVE profile has no pole assigned in this character's per-profile gear config, and a fishing
--- pole is currently equipped, pull that pole in as the default. Fills ONLY when empty — never overwrites an
--- assigned pole. Writes straight to the saved config (this is a default, NOT a user edit, so it must not
--- mark the profile dirty) and syncs the working copy so the pole box and the change-diff agree. Also
--- refreshes the options window if it's open.
+-- Keep the ACTIVE profile's pole in step with the pole you are actually wearing (slot 28, or a fishing pole in
+-- a weapon slot). Writes straight to the saved config — this is a DEFAULT, not a user edit, so it must not mark
+-- the profile dirty — and syncs the working copy so the pole box and the change-diff agree.
+--
+-- This used to be fill-only: `if pg.pole then return end`. That looked conservative and was actively harmful,
+-- because `pg.pole` stops meaning "the pole you chose" the moment it is set. It is written automatically the
+-- first time a profile is touched, and `ProfileGear` ownership-checks it only at CREATION (Profiles.lua:203),
+-- never again — so the very first pole a character ever held outranks reality forever. Diagnosed live: slot 28
+-- held 6365 while the profile was pinned to 6256, a pole the user did not even recognise. And the profile pole
+-- is what SBF EQUIPS when you start fishing, so the stale value was actively swapping a better pole OUT on
+-- every cast. Silent, permanent, and invisible in the UI because the box just shows the old id.
+--
+-- THE RULE: the PROFILE always wins. This only ever fills an EMPTY pole slot — it never replaces a pole the
+-- profile already has, even if you're wearing a different one. That matters because profiles are per-location:
+-- sitting in Default with your everyday pole on, then switching to a profile that uses a special pole, must not
+-- let the worn pole overwrite that profile's pick. An earlier revision preferred the equipped pole and
+-- announced the swap; that was wrong for exactly this case and is gone.
+--
+-- There is NO exception and no clearing of any kind: see the fill-only note at the `if current then return`
+-- below. Setting `autoAddPole = false` turns the fill off entirely.
 function SBF.AutoPopulatePole()
   if SBFDB.autoAddPole == false then return end
   local id = SBF.Store().activeProfile
   if not id then return end
   local pg = SBF.ProfileGear(id)
-  if pg.pole then return end                  -- already assigned: leave it alone
   local equipped = SBF.EquippedPole()
-  if not equipped then return end
+  -- Compare against what the user can SEE. The working copy is the live, possibly-unsaved edit that the pole
+  -- box renders; the saved config is only what was last written. Right-clicking the box calls setPole(nil),
+  -- which clears WORKING and leaves pg.pole intact — so reading pg alone said "already in step with your
+  -- equipped pole" while the box sat visibly empty and no pole ever got equipped. Checking the saved copy for
+  -- a UI state that lives in the working copy is the whole bug.
+  local live = (SBF.working and SBF.working.id == id) and SBF.working or nil
+  -- `(live and live.pole) or pg.pole` was WRONG and defeated the whole fix: when the working copy exists with
+  -- pole = nil — exactly the state right-click-clear produces — Lua falls straight through to the stale saved
+  -- id, so the cleared box read as "already set" and never refilled. If a working copy exists it IS the answer,
+  -- nil included. Only fall back to the saved config when there is no working copy at all.
+  local current
+  if live then current = live.pole else current = pg.pole end
+
+  -- NO DEAD-ID DELETION. An earlier revision cleared a stored pole that GetItemCount couldn't find, which is
+  -- an unattended destructive write running 2s after every login — and GetItemCount(id, true) does not see the
+  -- WARBAND bank, so a pole parked there reads as "gone" and the profile's pick gets destroyed. A pole you
+  -- cannot currently reach is still your choice; the cost of keeping it is a pinned slot you can right-click
+  -- to clear, which is strictly better than silently losing it. Fill-only, per "the profile always wins".
+  if current then return end                    -- THE PROFILE WINS: a real pole is set, leave it alone
+  if not equipped then return end               -- slot empty but nothing worn to adopt: nothing to do
+
   pg.pole = equipped
-  if SBF.working and SBF.working.id == id then
-    SBF.working.pole = equipped               -- keep the live working copy in sync
-  end
+  if live then live.pole = equipped end         -- keep the live working copy (and the box) in sync
   if SBF.RefreshOptions then SBF.RefreshOptions() end
 end
 
@@ -167,9 +199,14 @@ local function restoreGear()
   -- the equip-mgr-close path bring sound back with gear. Audio CVars are unprotected, so restore them even
   -- when the gear restore has to defer for combat below.
   if SBF.RestoreAudio then SBF.RestoreAudio() end
-  local snap = SBF.CharGear().snapshot; if not snap then return end
-  if InCombatLockdown() then SBF._gearPending = "restore"; return end
-  for slot, link in pairs(snap) do if link then EquipItemByName(link, slot) end end
+  local snap = SBF.CharGear().snapshot
+  if snap then
+    if InCombatLockdown() then SBF._gearPending = "restore"; return end   -- retry after combat (keep on=true)
+    for slot, link in pairs(snap) do if link then EquipItemByName(link, slot) end end
+  end
+  -- Clear the "in fishing gear" flag even when there was NO snapshot to restore. Keeps state honest and,
+  -- crucially, lets the idle observer stop: with a stuck on=true it (via ShouldIdleRestore) would otherwise
+  -- call restoreGear every tick forever.
   SBF.CharGear().on = false
 end
 
@@ -204,12 +241,18 @@ local function applyProfileGear()
   if SBF._emEditing then return end   -- editing the set in the Equipment Manager: don't fight the user's edits
   if InCombatLockdown() then SBF._gearPending = "apply"; return end
   local w = SBF.working; if not w then return end
+  -- (The empty-pole fill does NOT live here. This function is only reached through the GearNeedsEquip gate,
+  -- which returns false for a profile with no equipSet and no pole — the exact case the fill exists for — so a
+  -- hook here is unreachable when it matters. It runs in the press path ahead of that gate instead.)
   if not (w.equipSet or w.pole) then return end          -- profile manages no gear (e.g. Default) -> leave alone
   local setOK, poleOK = setEquipped(w.equipSet), poleEquipped(w.pole)
   if setOK and poleOK then SBF.CharGear().on = true; return end   -- already wearing it: nothing to do
   -- Snapshot the current gear for Restore ONLY when transitioning from the normal state (CharGear().on
-  -- false). If the user changed gear while we thought the profile was on, we re-equip but keep the
-  -- original pre-fishing snapshot (Restore = "back to what I had before I started fishing here").
+  -- false). This captures whatever you're wearing right before SBF's first gear change this session, which is
+  -- your normal loadout when you press from normal gear. If the user changed gear while we thought the profile
+  -- was on, we re-equip but keep the original pre-fishing snapshot (Restore = "back to what I had before I
+  -- started fishing here"). Note: the pole lives in slot 28 (excluded above), so a pole you normally wear is
+  -- untouched by snapshot/restore — restoring only swaps slots 1-19 back.
   if not SBF.CharGear().on then snapshotGear() end
   -- Pole: equip WITHOUT a destination slot. Passing slot 28 is rejected as "Invalid inventory dstSlot" —
   -- that param is only for items that fit multiple slots; a pole has one valid slot, so the no-slot form
@@ -250,6 +293,25 @@ function SBF.RestoreNormalGear() restoreGear() end           -- "Restore normal 
 function SBF.RevertToNormal()
   if SBF.RestoreNormalGear then SBF.RestoreNormalGear() end   -- gear (also brings audio back via restoreGear)
   if SBF.RestoreAudio then SBF.RestoreAudio() end             -- explicit + idempotent: covers the no-gear-snapshot case
+end
+
+-- Should the idle observer revert fishing gear/audio RIGHT NOW? Extracted from the OnUpdate closure in
+-- Core.lua as a pure decision so it's unit-testable (tests/idle_restore_test.lua). `now` is GetTime().
+-- The load-bearing gate is `cg.on or cg.audioOn`: the observer must act ONLY while something fishing-related
+-- is actually applied. Without it the observer re-ran RevertToNormal on EVERY ~1s tick once you'd gone idle,
+-- and restoreGear force-equipped the stored snapshot each time — silently stomping any gear you tried to
+-- equip by hand while standing still (the "gear keeps swapping back on its own, no keypress" bug). After one
+-- successful RevertToNormal clears on/audioOn, every later tick short-circuits here (the combat-deferred case
+-- keeps on=true, so it correctly keeps wanting to restore until PLAYER_REGEN_ENABLED drains it).
+function SBF.ShouldIdleRestore(now)
+  if SBF._emEditing then return false end                          -- editing the set: never yank gear mid-edit
+  if not (SBFDB and SBFDB.idleRestoreEnabled) then return false end
+  local cg = SBF.CharGear and SBF.CharGear()
+  if not (cg and (cg.on or cg.audioOn)) then return false end      -- nothing applied -> nothing to revert
+  local lastActive = math.max(SBF.lastActionAt or 0, SBF.lastFishingAt or 0)
+  if lastActive == 0 or (now - lastActive) <= (SBFDB.idleRestoreSeconds or 30) then return false end
+  if SBF.IsFishingChannel and SBF.IsFishingChannel() then return false end   -- still channeling Fishing: not idle
+  return true
 end
 
 -- The SINGLE "enter / re-assert the fishing state" entry point, mirroring RevertToNormal(): applies focus

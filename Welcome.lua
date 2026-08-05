@@ -118,11 +118,11 @@ local function build()
   tag:SetText("|cffe8c679The only fishing add-on that does it all.|r")   -- brand gold
   y = y - 38
   -- the core loop stays WHITE; everything the one key ALSO does is tucked BETWEEN loot and recast, colour-coded
-  local actions = "One key runs your whole fishing loop — cast, wait, loot, "
+  local actions = "One key runs your whole fishing loop - cast, wait, loot, "
     .. "|cffe8c679eat, drink, lures, bobbers, chum, buffs,|r "
     .. "|cfff28c28fight, heal,|r "
     .. "|cff7cb83aboat, dismount,|r "
-    .. "then recast — automatically."
+    .. "then recast - automatically."
   local acts = para(body, PAD, y, W, actions, "text")
   local _f, _sz, _fl = acts:GetFont(); if _f then acts:SetFont(_f, (_sz or 12) + 2, _fl) end   -- a touch bigger
   y = y - 62
@@ -164,7 +164,10 @@ local function build()
     local fishPad = SBF.NativeKeyOfKind(SBF.FISHING_CMD, "pad")
     local lootPad = SBF.NativeKeyOfKind("INTERACTTARGET", "pad")
     SBFDB.gamepadEnable = (fishPad and (not SBFDB.requireTwoButtons or lootPad)) and true or false
-    pcall(SetCVar, "GamePadEnable", SBFDB.gamepadEnable and "1" or "0")
+    -- Only ENABLE the pad when SBF needs it; never force it OFF here. GamePadEnable is a GLOBAL CVar, so a user
+    -- who turned their gamepad on outside SBF must keep it — force-writing "0" when SBF's pad button is unset
+    -- would silently disable their controller. (QC finding.)
+    if SBFDB.gamepadEnable then pcall(SetCVar, "GamePadEnable", "1") end
     syncSettingsLootUI()
   end
 
@@ -298,72 +301,26 @@ local function build()
 
   -- 4) combat --------------------------------------------------------------------
   header(body, PAD, y, W, "Combat  |cff9aa0aa(optional)|r"); y = y - 26
-  para(body, PAD, y, W, "Combat defaults to targeting the nearest enemy + WoW's Single-Button Assistant. Drag in your own macro to override.", "textDim"); y = y - 38
+  para(body, PAD, y, W, "Combat defaults to WoW's Single-Button Assistant, cast at whatever you are already fighting. Drag in your own macro to override.", "textDim"); y = y - 38
   -- the REAL action-slot widget; SBF.SlotDef("combat") routes to the PER-CHARACTER combat config
   ns.MakeItemButton(body, PAD, y, SBF.SlotDef("combat"), nil, "combat")
   y = y - (ICON + 12)
 
   -- 5) heal ----------------------------------------------------------------------
   header(body, PAD, y, W, "Heal  |cff9aa0aa(optional)|r"); y = y - 26
-  para(body, PAD, y, W, "No default — add your own heal macro/spell/item.", "textDim"); y = y - 38
+  para(body, PAD, y, W, "No default - add your own heal macro/spell/item.", "textDim"); y = y - 38
   ns.MakeItemButton(body, PAD, y, SBF.SlotDef("heal"), nil, "heal")
   y = y - (ICON + 16)
 
-  -- 6) advanced mode -------------------------------------------------------------
-  -- Mirrors the "Enable advanced mode" checkbox in Settings (same SBFDB.advancedMode flag): on = location
-  -- profiles that auto-swap per zone; off = one simple setup. Toggling here re-lays the Profile page and
-  -- re-syncs the Settings checkbox (and vice-versa) so the two are always in lockstep.
-  header(body, PAD, y, W, "Advanced mode  |cff9aa0aa(optional)|r"); y = y - 26
-  para(body, PAD, y, W, "Turn on location-based profiles: per-zone gear, lures and food that auto-swap as you travel. Off keeps a single simple setup.", "textDim"); y = y - 38
-  local advCb = labeledCheck(body, PAD, y,
-    "Enable advanced profiles",
-    function() return SBFDB.advancedMode ~= false end,
-    function(v)
-      SBFDB.advancedMode = v and true or false
-      local p = SBF._optionsPanel
-      if p and p._relaySimpleMode then p._relaySimpleMode() end          -- re-lay the Profile page
-      if p and p._refreshAdvancedMode then p._refreshAdvancedMode() end  -- tick the matching Settings box + its sub-options
-    end,
-    "Advanced mode", "On = profiles that auto-swap by location (per-zone gear/lures/food). Off = one simple setup. "
-      .. "Same as \"Enable advanced mode\" in Settings.")
-  y = y - 30
-  -- let the Settings checkbox re-tick THIS box when it's the one toggled (both windows open)
-  SBF._welcomeRefreshAdvanced = function() if advCb then advCb:SetChecked(SBFDB.advancedMode ~= false) end end
-
-  -- ---- one-time: load this character's fishing skill ------------------------------------------------------
-  -- WoW only hands the addon your per-expansion fishing skill AFTER the Fishing Journal has been opened once on
-  -- this character (a Blizzard quirk — the header reads "not loaded" until then). The button below casts the
-  -- Fishing Journal directly; opening it is a protected cast, so this is a SECURE button (same as the Skill Book
-  -- tab), with the click edge matched to ActionButtonUseKeyDown via GECBind so it fires on a key-down client too.
-  header(body, PAD, y, W, "Show your fishing skill  |cff9aa0aa(one-time, per character)|r"); y = y - 26
+  -- Sign-off instead of more setup. Advanced mode stays ON by default (SBFDB.advancedMode ~= false); the
+  -- Settings checkbox still toggles it — it's just not surfaced on this welcome panel anymore. The fishing
+  -- skill loads itself once you open your Fishing Journal, so there's nothing to click here either.
+  header(body, PAD, y, W, "A memo from Management"); y = y - 26
   para(body, PAD, y, W,
-    "WoW only shows your fishing skill once your Fishing Journal has been opened on this character. Click below "
-    .. "one time — after that your skill (and \"no skill here\" for zones you haven't leveled) shows automatically.",
-    "textDim"); y = y - 50
-  -- SECURE button: creating + configuring a SecureActionButton (SetAttribute / secure click reg / SetPoint) is
-  -- PROTECTED and BLOCKED in combat. If /sbf welcome opens mid-fight, that would abort the Welcome build. So it
-  -- lives in its own builder that isn't called in combat; the panel still opens and the button draws the instant
-  -- combat ends (per the GEC secure-action doctrine). The layout slot is reserved either way (y -= 34 below).
-  local btnY = y
-  local welcomeBtnDone = false
-  local function buildWelcomeJournalBtn()
-    if welcomeBtnDone or InCombatLockdown() then return end
-    welcomeBtnDone = true
-    local profBtn = CreateFrame("Button", "SBFWelcomeJournalBtn", body, "SecureActionButtonTemplate, UIPanelButtonTemplate")
-    profBtn:SetSize(180, 24); profBtn:SetPoint("TOPLEFT", PAD, btnY); profBtn:SetText("Open Fishing Journal")
-    Theme.Button(profBtn)
-    local GB = _G.LibStub and _G.LibStub:GetLibrary("GECBind-1.0", true)
-    if GB and GB.RegisterSecureClicks then GB.RegisterSecureClicks(profBtn) else profBtn:RegisterForClicks("AnyUp") end
-    profBtn:SetAttribute("type", "macro")
-    profBtn:SetAttribute("macrotext", "/cast Fishing Journal")
-  end
-  if InCombatLockdown() then
-    local w = CreateFrame("Frame"); w:RegisterEvent("PLAYER_REGEN_ENABLED")
-    w:SetScript("OnEvent", function(self) self:UnregisterEvent("PLAYER_REGEN_ENABLED"); buildWelcomeJournalBtn() end)
-  else
-    buildWelcomeJournalBtn()
-  end
-  y = y - 34
+    "You're all set. The boring part's over, so get out there and slay some fish. Show the lake who's boss, "
+    .. "keep that bobber proud, and remember: a fish uncaught is a fish that got away with it. Tight lines, and "
+    .. "don't embarrass us out there.\n\n- Management",
+    "textDim"); y = y - 78
 
   -- size the scroll child to the laid-out content (a little tail so the last line isn't flush to the edge)
   body:SetHeight(-y + 12)
@@ -371,7 +328,6 @@ local function build()
   -- keep the input selector + two-button rows honest if the window is reopened later
   f._refresh = function()
     applyInput(SBFDB.welcomeInput or "keyboard")   -- re-show the active panel + re-sync its two-button visibility
-    if advCb then advCb:SetChecked(SBFDB.advancedMode ~= false) end   -- re-sync the advanced-mode box
   end
 
   -- ---- footer (fixed band under the scroll frame) -----------------------------
@@ -429,6 +385,10 @@ function SBF.ShowWelcome()
   if welcome._refresh then welcome._refresh() end
   welcome:Show(); welcome:Raise()
 end
+
+-- combat-safe-windows helpers (Core's regen watcher hides the Welcome in combat since it blocks the screen).
+function SBF.WelcomeShown() return welcome and welcome:IsShown() and true or false end
+function SBF.HideWelcome() if welcome then welcome:Hide() end end
 
 -- First-run auto-pop: on login, show the welcome unless the user has dismissed it. Own event frame
 -- (PLAYER_LOGIN) so it can't double-fire with Core's handler. Deferred a tick so Options/profile state

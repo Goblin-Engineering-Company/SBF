@@ -222,11 +222,30 @@ for _, b in ipairs(KNOWN_BOATS) do KNOWN_BOAT_BUFF[b.id] = b.buff end
 local function knownBoatBuff(id) return KNOWN_BOAT_BUFF[tonumber(id) or id] end
 ns.knownBoatBuff = knownBoatBuff
 
--- when an item is loaded into a slot, pre-fill its buff: a curated boat uses its HARDCODED buff (never the
--- learned cache, which scrambles two boats); else the per-item cache (lookup-first; an unknown item clears
--- it so learnBuff catches the name after the next cast).
+-- the LOCKED per-item knowledge from the bundled catalog (Data.lua -> ns.Catalog.meta[id].knowledge), or nil.
+-- This is the AUTHORITATIVE buff identity (name + stable buffSpell + duration/kind) for a catalogued item —
+-- curated + cross-validated (observed/blizzard/db2), so it must win over anything proximity-learned locally.
+local function catalogKnow(id)
+  id = tonumber(id) or id
+  local cat = ns.Catalog
+  local m = cat and cat.meta and id and cat.meta[id]
+  return m and m.knowledge or nil
+end
+ns.CatalogKnow = catalogKnow
+
+-- when an item is loaded into a slot, pre-fill its buff. Precedence (highest first):
+--   1) the bundled CATALOG's locked knowledge — a catalogued item's buff identity NEVER comes from the
+--      proximity-learned cache, so a neighbour's still-up aura can't be written over it (the oversized-
+--      bobber-ate-chum cross-contamination). buffSpell is the stable identity the due-check matches on.
+--   2) a curated boat's HARDCODED buff (legacy path; catalog now covers boats too but this stays as a fallback).
+--   3) the per-item learned cache (lookup-first; an unknown item clears it so learnBuff catches it next cast).
 local function seedItemBuff(def)
   local iid = curItemId(def)
+  local ck = iid and catalogKnow(iid)
+  if ck and ck.buff and ck.buff ~= "" then
+    def.buff, def.buffFor, def.buffSpell = ck.buff, itemKey(def), ck.buffSpell
+    return
+  end
   local kb = iid and knownBoatBuff(iid)
   -- keep def.buffSpell in lock-step with def.buff so the spellID-preferring "is the buff up" check can
   -- never read a spellId that belongs to a previously-loaded item.
@@ -308,7 +327,11 @@ local function effectLeft(slotDef, def)
   -- collect: mirror an explicit/learned slot buff into the per-item DB under the numeric item id
   -- (the key def.items / the diag use), so a buff known only at the slot level — typed, /sbf setbuff,
   -- or learned under a different key — still shows up and is shareable. Idempotent (writes once).
-  if def.buff and def.buff ~= "" then
+  -- ONLY mirror when the slot-level buff actually belongs to the CURRENT item (buffFor == itemKey, or no
+  -- buffFor for a typed buff). Without this, the "ride the old buff" / async-learn window — where def.buff
+  -- still holds the PREVIOUS item's buff while a new item is armed — stamps the wrong buff onto the new
+  -- item's account-wide record (a second cross-contamination path, boat A->B being the classic trigger).
+  if def.buff and def.buff ~= "" and (not def.buffFor or def.buffFor == itemKey(def)) then
     local iid = curItemId(def)
     if iid and not (SBF.ItemKnow(iid) and SBF.ItemKnow(iid).buff) then
       SBF.ObserveItem(iid, { buff = def.buff })
@@ -343,12 +366,15 @@ function SBF.ClearLearnedBuff(slotKey)
   if not def then return end
   -- clear EVERY item in the slot (not just the loaded one) — a rotation slot like boat holds several,
   -- and a cross-contaminated one must be re-learnable.
+  -- clear buffDuration too: a scrambled record carries the WRONG duration (e.g. a 3600s bobber duration on a
+  -- 30s chum item), and leaving it wedges the slot on a stale timer after repair. postFire's misfire path
+  -- already nils buffDuration for exactly this reason — keep the repair consistent with it.
   for _, id in ipairs(def.items or {}) do
-    local rec = SBF.ItemKnow(id); if rec then rec.buff, rec.buffSpell = nil, nil end
+    local rec = SBF.ItemKnow(id); if rec then rec.buff, rec.buffSpell, rec.buffDuration = nil, nil, nil end
   end
   local iid = curItemId(def)
   local rec = iid and SBF.ItemKnow(iid)
-  if rec then rec.buff, rec.buffSpell = nil, nil end
+  if rec then rec.buff, rec.buffSpell, rec.buffDuration = nil, nil, nil end
   def.buff, def.buffFor, def.buffSpell = nil, nil, nil
 end
 
@@ -592,15 +618,39 @@ function nextDueItem(slotDef, def)   -- fills the forward-declared upvalue above
 end
 ns.nextDueItem = nextDueItem
 
+-- how many seconds of buff a burst is trying to BUILD to: the throw count x the item's per-throw duration
+-- (catalog knowledge preferred — the locked, cross-validated value — else the learned/observed record).
+-- A stacking chum is +30s/throw, so "burst of 5" aims for ~150s. nil when the per-throw duration is unknown
+-- (then the burst has no timer cap and falls back to the plain owe behaviour).
+local function burstGoal(slotDef, def)
+  if not (slotDef and slotDef.allowsRepeat) then return nil end
+  local count = math.max(1, math.floor(tonumber(def["repeat"]) or 1))
+  local iid = curItemId(def)
+  local ck = iid and ns.CatalogKnow and ns.CatalogKnow(iid)
+  local rec = iid and SBF.ItemKnow(iid)
+  local per = (ck and ck.buffDuration) or (rec and rec.buffDuration)
+  if not (per and per > 0) then return nil end
+  return count * per
+end
+ns.burstGoal = burstGoal
+
 local function slotDue(slotDef, def)
   local k = slotDef.id
   -- fireAll: due while ANY item still needs applying (one item per press; stays due across presses
   -- until every item's buff is up). Same helper pickItem uses, so they can't disagree.
   if slotDef.fireAll then return nextDueItem(slotDef, def) ~= nil end
-  -- burst debt (chum): while it still owes casts, force it due (bypass the grace) so consecutive
-  -- presses keep throwing until the debt is paid. One cast per press (secure button), so repeat=N
-  -- means N due-returns over N presses.
-  if (def._owe or 0) > 0 then return true end
+  -- burst debt (chum): while it still owes casts, force it due (bypass the grace) so consecutive presses
+  -- keep throwing to BUILD the stack. BUT the LIVE BUFF TIMER CAPS THE BURST: once the buff has reached what
+  -- this burst aims for (burstGoal = count x per-throw seconds), stop and VOID the debt — never keep throwing
+  -- into an already-tall/maxed buff. This is "the timer overrides the owe": it turns a stale or oversized
+  -- _owe (e.g. left at 33 by an earlier bug) into a no-op the instant the buff is high enough, and it stops
+  -- the classic "keep chumming at max" waste. No goal (per-throw unknown) -> old behaviour (drain the debt).
+  if (def._owe or 0) > 0 then
+    local goal = burstGoal(slotDef, def)
+    local have = effectLeft(slotDef, def)
+    if goal and have and have >= goal then def._owe = 0   -- burst achieved / buff tall enough -> done
+    else return true end
+  end
   local refresh = slotRefresh(slotDef, def)
   -- item swapped since the buff was auto-learned: ride the OLD buff until it expires (no point
   -- re-applying while up), then forget it so the NEW item fires + re-learns. (Typed buffs have no
@@ -1036,7 +1086,7 @@ ns.buildPressMacro = buildPressMacro
 function ns.NotifyApplyFail(slotDef, def, tries)
   if not (SBFDB and SBFDB.debug) then return end   -- DEBUG-ONLY: fires misleadingly often in normal play
   local nm = defName(def) or (slotDef and slotDef.label) or (slotDef and slotDef.id) or "?"
-  print(string.format("|cff45c4a0SBF|r |cffff6060couldn't confirm \"%s\" applied after %d tries|r — backing off %ds (buff undetectable, item on cooldown, or unusable?).",
+  print(string.format("|cff45c4a0SBF|r |cffff6060couldn't confirm \"%s\" applied after %d tries|r - backing off %ds (buff undetectable, item on cooldown, or unusable?).",
     tostring(nm), tries or 0, SBFDB.applyBackoff or 30))
 end
 
@@ -1060,7 +1110,15 @@ local function postFire(slotDef, def, timed)
   -- detected (effectLeft present). If it climbs to the limit, the buff never landed -> NAP (back-off so we
   -- stop hammering), FORGET a learned buff name so the next attempt re-learns it (a wrong name is the usual
   -- cause), and tell the user once. time() (unix) so the nap survives a /reload and expires correctly.
-  if timed and (slotDef.effect == "aura" or slotDef.effect == "enchant") then
+  --
+  -- BURST GUARD: a repeat/burst slot (chum) fires N times in a row ON PURPOSE (owe still owed). Those N
+  -- throws are ONE apply attempt, not N failures — counting each one races _applyTries to the limit WITHIN
+  -- a single burst, trips the back-off, and FORGETS the (correct) buff name, which then lets a neighbouring
+  -- slot steal that aura (the oversized-bobber ate chum's "Chum" cross-contamination). So a burst
+  -- CONTINUATION (owe already > 0 before this throw's decrement) must not increment tries — only the first
+  -- throw of a burst counts. `def._owe` here is the value carried from the PREVIOUS postFire (decremented below).
+  local burstCont = slotDef.allowsRepeat and (def._owe or 0) > 0
+  if timed and not burstCont and (slotDef.effect == "aura" or slotDef.effect == "enchant") then
     def._applyTries = (def._applyTries or 0) + 1
     local maxTries = SBFDB.applyMaxTries or 3
     if def._applyTries >= maxTries then

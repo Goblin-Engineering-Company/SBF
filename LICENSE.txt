@@ -1,4 +1,4 @@
-Goblin Engineering Company — Addon License
+Goblin Engineering Company Addon License
 
 Copyright © 2026 Goblin Engineering Company. All rights reserved.
 
@@ -14,7 +14,7 @@ Company:
   • use this code in a commercial product or service.
 
 Embedded libraries under Libs/ are separately licensed (MIT) and may be
-used under their own terms — see the license file or notice that
+used under their own terms. See the license file or notice that
 accompanies each library.
 
 Official distribution: https://goblineng.co and the Goblin Engineering

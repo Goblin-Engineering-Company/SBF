@@ -21,6 +21,7 @@ local markDirty            = ns.opt.markDirty
 local styleSlot            = ns.opt.styleSlot
 local helpTip              = ns.opt.helpTip
 local helpLabel            = ns.opt.helpLabel
+local showTip              = ns.opt.showTip   -- the ONE canonical tooltip draw (cursor + accent title + grey body)
 local MakeRow              = ns.opt.MakeRow
 local MakeKeybindButton    = ns.opt.MakeKeybindButton
 local MakeNativeBindButton = ns.opt.MakeNativeBindButton
@@ -77,7 +78,7 @@ StaticPopupDialogs["SBF_SCOPE_TO_WARBAND"] = {
 -- profile. Names the profile + lists what changed (arg1 = name, arg2 = the change list), then offers to
 -- Save these edits / Discard them / Open the window to review (no swap).
 StaticPopupDialogs["SBF_PROFILE_DIRTY_ONLEAVE"] = {
-  text = "SBF — unsaved changes to profile \"%s\"\n%s\n\nSave them to this profile, discard them, or open SBF to review?",
+  text = "SBF - unsaved changes to profile \"%s\"\n%s\n\nSave them to this profile, discard them, or open SBF to review?",
   button1 = "Save", button2 = "Discard", button3 = "Open",
   OnAccept = function() SBF.SaveWorking(); SBF.DoSwap(SBF._pendingSwap) end,   -- Save (button1)
   OnCancel = function() SBF.DoSwap(SBF._pendingSwap) end,                      -- Discard (button2)
@@ -96,7 +97,7 @@ StaticPopupDialogs["SBF_PROFILE_DIRTY_ONLEAVE"] = {
 -- SBF_NEW_PROFILE name-entry popup), and "Discard" drops them. OnZoneMaybeChanged picks which dialog to
 -- show, so neither dialog ever mutates the other — no stale label/handler can leak between the two cases.
 StaticPopupDialogs["SBF_PROFILE_DIRTY_DEFAULT"] = {
-  text = "SBF — unsaved changes on the Default profile \"%s\"\n%s\n\nSave them to Default (the catch-all profile), start a New profile from them, or Discard before switching?",
+  text = "SBF - unsaved changes on the Default profile \"%s\"\n%s\n\nSave them to Default (the catch-all profile), start a New profile from them, or Discard before switching?",
   button1 = "Save to Default", button2 = "Discard", button3 = "New profile",
   OnAccept = function() SBF.SaveWorking(); SBF.DoSwap(SBF._pendingSwap) end,   -- Save to Default (button1)
   OnCancel = function() SBF.DoSwap(SBF._pendingSwap) end,                      -- Discard (button2)
@@ -186,7 +187,7 @@ StaticPopupDialogs["SBF_BIND_DEFAULT"] = {
 -- calls Stats.Reset + re-renders. File-scoped entry like the others, callback bridged via the closure.
 SBF._statsResetPopup = SBF._statsResetPopup or {}
 StaticPopupDialogs["SBF_RESET_STATS"] = {
-  text = "|cff45c4a0SBF|r\n\nReset your all-time fishing stats to zero?\n(your fishing log is NOT affected — this only clears the Stats totals)",
+  text = "|cff45c4a0SBF|r\n\nReset your all-time fishing stats to zero?\n(your fishing log is NOT affected - this only clears the Stats totals)",
   button1 = "Reset", button2 = CANCEL,
   OnAccept = function() if SBF._statsResetPopup.onReset then SBF._statsResetPopup.onReset() end end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
@@ -208,8 +209,9 @@ local function Build()
     title = "SBF  |cff66ccff::|r  |cff808080Single-Button Fishing|r",   -- build # shown only in the dev bottom bar (see Reload UI block)
     width = 564, height = 520, minWidth = BUILD_MIN_W, minHeight = 560,
     resizable = true, collapsible = true, specialFrame = false,
-    deferCollapseInCombat = true,   -- this window hosts SECURE buttons (Skill Book journal) -> collapse toggles
-                                    -- content visibility, which is combat-protected; defer to combat-end (GECTheme)
+    deferCollapseInCombat = false,  -- was true while this window hosted SECURE buttons (Skill Book journal).
+                                    -- Those are gone, so collapse is unprotected + safe in combat — and Core's
+                                    -- combat-window watcher auto-collapses it on combat entry, which this must allow.
     savedKey = SBFDB,
     onResize = function() if panel._onWindowResize then panel._onWindowResize() end end,
   })
@@ -391,8 +393,7 @@ local function Build()
     updateSaveState()
   end)
   saveBtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText("Save these slot edits to the profile")
-    GameTooltip:AddLine("Until you Save, edits live only in the working copy.", 1, 1, 1, true); GameTooltip:Show()
+    showTip(self, "Save these slot edits to the profile", "Until you Save, edits live only in the working copy.")
   end)
   saveBtn:SetScript("OnLeave", GameTooltip_Hide)
   panel._updateSaveState = updateSaveState   -- so the dirty-marking sites can refresh it
@@ -543,8 +544,7 @@ local function Build()
     if refreshProfileBar then refreshProfileBar() end   -- redraw bindings/name from the reverted copy
   end)
   revertBtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText("Discard unsaved slot edits")
-    GameTooltip:AddLine("Reloads the slots from the saved profile.", 1, 1, 1, true); GameTooltip:Show()
+    showTip(self, "Discard unsaved slot edits", "Reloads the slots from the saved profile.")
   end)
   revertBtn:SetScript("OnLeave", GameTooltip_Hide)
   updateSaveState()
@@ -570,11 +570,7 @@ local function Build()
 
   -- helper: a font-string label made hoverable so the whole control+label gets the tooltip (project rule)
   local function barTip(frame, tipTitle, tipBody)
-    frame:HookScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText(tipTitle)
-      if tipBody then GameTooltip:AddLine(tipBody, 1, 1, 1, true) end
-      GameTooltip:Show()
-    end)
+    frame:HookScript("OnEnter", function(self) showTip(self, tipTitle, tipBody) end)
     frame:HookScript("OnLeave", GameTooltip_Hide)
   end
   local function labelHover(fs, w, tipTitle, tipBody)   -- font strings aren't mouse-enabled; cover the word too
@@ -676,10 +672,7 @@ local function Build()
       b = CreateFrame("Button", nil, pBtn, "UIPanelButtonTemplate")
       b:SetHeight(22); Theme.Button(b)
       b:HookScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("Bind location")
-        GameTooltip:AddLine(self._tip or "", 1, 1, 1, true)
-        GameTooltip:Show()
+        showTip(self, "Bind location", self._tip or "")
       end)
       b:HookScript("OnLeave", GameTooltip_Hide)
       bindBtns[i] = b
@@ -752,7 +745,7 @@ local function Build()
       -- sit where they always did, but blbl is now vertically centered on them instead of riding high.
       b:SetPoint("TOPLEFT", blbl, "TOPLEFT", (x - 8), 4 - rowIdx * ROWY)   -- blbl x is 8; offset from it
       x = x + w + GAPX
-      b._tip = ("Bind this profile to the %s \"%s\". Applies immediately — no Save needed."):format(level.kind or "location", level.name)
+      b._tip = ("Bind this profile to the %s \"%s\". Applies immediately - no Save needed."):format(level.kind or "location", level.name)
       local name, kind, mapID = level.name, level.kind, level.mapID
       b:SetScript("OnClick", function() doBind(name, kind, mapID) end)
       b:Show()
@@ -793,7 +786,7 @@ local function Build()
     bindExtra = math.max(0, sectionBottom + BIND_GAP - GEAR_TOP)
     if placeGearBlock then placeGearBlock() end
   end
-  labelHover(blbl, 56, "Bind here", "Bind this profile to a level of where you're standing so it auto-activates when you return. The most specific (deepest) match wins. Bindings apply immediately — they don't need Save (and Revert won't undo them).")
+  labelHover(blbl, 56, "Bind here", "Bind this profile to a level of where you're standing so it auto-activates when you return. The most specific (deepest) match wins. Bindings apply immediately - they don't need Save (and Revert won't undo them).")
 
   -- ===== gear block (below the bind-here section, above the slot list) =====
   -- A separator, then the per-profile gear row (equipment set + Equipment-mgr), and the fishing-pole drop
@@ -902,11 +895,11 @@ local function Build()
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     local pole = SBF.working and SBF.working.pole
     if pole then GameTooltip:SetItemByID(pole)
-    else GameTooltip:SetText("Fishing pole"); GameTooltip:AddLine("Drag a pole here to equip it with this profile; right-click to clear.", 1, 1, 1, true) end
+    else GameTooltip:SetText("Fishing pole", accentRGB()); GameTooltip:AddLine("Drag a pole here to equip it with this profile; right-click to clear.", 0.85, 0.85, 0.85, true) end
     GameTooltip:Show()
   end)
   poleBtn:SetScript("OnLeave", GameTooltip_Hide)
-  labelHover(plbl2, 70, "Fishing pole", "The pole this profile equips (into the profession tool slot) on the first action press after switching. Right-click the box to clear.")
+  labelHover(plbl2, 70, "Fishing pole", "The pole this profile equips (into the profession tool slot) on the first action press after switching. Leave it empty and SBF fills it with the pole you're wearing, so you never have to set it by hand. Once it's set, this profile keeps it: put a different pole on and your choice here is left alone. Drag a pole here to change it, right-click to clear and pick up whatever you're wearing.")
 
   -- separator under the fishing-pole row, dividing the gear block from the slot list below (matches the
   -- other separators' faint-white style/width). The scroll frame's top (GEAR_BLOCK_H) sits just under it.
@@ -1057,7 +1050,7 @@ local function Build()
     if SBF.SetDefaultProfile then SBF.SetDefaultProfile(curProfileId()) end
     refreshProfileBar()
   end)
-  barTip(defBtn, "Set as default", "Make this the default profile — the one used when no location binding matches. Only one profile is the default.")
+  barTip(defBtn, "Set as default", "Make this the default profile - the one used when no location binding matches. Only one profile is the default.")
 
   -- ===== Simple/Advanced mode =====
   -- ADVANCED (advancedMode true, default): the full profile bar + bind section show, gear block sits below
@@ -1157,10 +1150,7 @@ local function Build()
     if not key then return nil end
     return function(owner)
       local h = SBF.GetHelp and SBF.GetHelp(key); if not h then return end
-      GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
-      GameTooltip:SetText(h.title or key, accentRGB())
-      if h.body then GameTooltip:AddLine(h.body, 0.85, 0.85, 0.85, true) end
-      GameTooltip:Show()
+      showTip(owner, h.title or key, h.body)   -- the ONE canonical draw (cursor + accent title + grey body)
     end
   end
   local function C(label, get, set, key) return { label = label, get = get, set = set, help = optHelp(key) } end
@@ -1186,9 +1176,8 @@ local function Build()
   mdf:SetScript("OnEditFocusLost", commitMDF)
   mdf:SetScript("OnEscapePressed", function(s) commitMDF(s); s:ClearFocus() end)
   mdf:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Double-click window (sec)")
-    GameTooltip:AddLine("How fast the two presses must be to count as a double-click (0.20-0.60). "
-      .. "Lower = faster; higher = more forgiving. Default 0.40.", 1, 1, 1, true); GameTooltip:Show()
+    showTip(self, "Double-click window (sec)", "How fast the two presses must be to count as a double-click (0.20-0.60). "
+      .. "Lower = faster; higher = more forgiving. Default 0.40.")
   end)
   mdf:SetScript("OnLeave", GameTooltip_Hide)
   -- cast-fail back-off (Fishing behavior)
@@ -1216,8 +1205,7 @@ local function Build()
   local faBtn = Theme.MakeButton(pBe, 130, "Audio settings\226\128\166",
     function() if SBF.ShowFocusAudio then SBF.ShowFocusAudio() end end)
   faBtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Focus audio settings")
-    GameTooltip:AddLine("Set the sound levels SBF switches to while fishing (master/SFX/music/ambience/dialog).", 1, 1, 1, true); GameTooltip:Show()
+    showTip(self, "Focus audio settings", "Set the sound levels SBF switches to while fishing (master/SFX/music/ambience/dialog).")
   end)
   faBtn:SetScript("OnLeave", GameTooltip_Hide)
 
@@ -1304,7 +1292,7 @@ local function Build()
               if v then
                 local ok = pcall(SetCVar, "GamePadEnable", "1")
                 print("|cff45c4a0SBF|r controller support " .. (ok and "enabled" or "couldn't set the CVar")
-                  .. " — if controller buttons don't bind yet, |cffffd100/reload|r once. See |cffffd100/sbf controller|r.")
+                  .. " - if controller buttons don't bind yet, |cffffd100/reload|r once.")
               end
               if panel._refreshKeysPage then panel._refreshKeysPage() end
             end, "set.gamepadEnable"), grow = 1, id = "gamepad" },
@@ -1329,6 +1317,12 @@ local function Build()
           function() return SBFDB.sitBeforeCast end, function(v) SBFDB.sitBeforeCast = v end, "set.sitBeforeCast"), id = "sit" },
       { check = C("Auto-dismount to fish  (never while flying)",
           function() return SBFDB.autoDismount end, function(v) SBFDB.autoDismount = v end, "set.autoDismount") },
+      { check = C("Refresh skill on cast",
+          function() return SBFDB.refreshSkillOnCast ~= false end,
+          function(v) SBFDB.refreshSkillOnCast = v and true or false end, "set.refreshSkillOnCast") },
+      { check = C("Get out of the way in combat",
+          function() return (SBFDB.combatWindowMode or "collapse") ~= "off" end,
+          function(v) SBFDB.combatWindowMode = v and "collapse" or "off" end, "set.combatWindows") },
       { dir = "row", align = "center",
         { note = { text = "Cast-fail back-off", color = "text",
                    onBuild = function(fs) helpLabel(fs, "set.castBackoff") end } },
@@ -1359,8 +1353,6 @@ local function Build()
             end, "set.focusAudio") },   -- no grow: left-pack so the Audio-settings button sits next to the checkbox
         { frame = faBtn },
       },
-      { check = C("Log gathered loot (chests & containers you open)",
-          function() return SBFDB.gatherLoot ~= false end, function(v) SBFDB.gatherLoot = v and true or false end, "set.gatherLoot") },
     },
 
     { section = "Profile advanced mode",
@@ -1394,6 +1386,7 @@ local function Build()
       soundRowSpec("Cast fail", { enable = "castFailSound", mode = "castFailSoundMode", id = "castFailSoundId" }, SBF.PlayCastFailSound, "set.castFailSound"),
       soundRowSpec("No fish hooked", { enable = "noFishSound", mode = "noFishSoundMode", id = "noFishSoundId" }, SBF.PlayNoFishSound, "set.noFishSound"),
       soundRowSpec("Expired (ran full, no bite)", { enable = "expiredSound", mode = "expiredSoundMode", id = "expiredSoundId" }, SBF.PlayExpiredSound, "set.expiredSound"),
+      soundRowSpec("Nothing (empty line)", { enable = "nothingSound", mode = "nothingSoundMode", id = "nothingSoundId" }, SBF.PlayNothingSound, "set.nothingSound"),
       soundRowSpec("Patiently Rewarded", { enable = "prSound", mode = "prSoundMode", id = "prSoundId" }, SBF.PlayPRSound, "set.prSound"),
     },
 
@@ -1499,26 +1492,37 @@ local function Build()
   logMaxEb:SetScript("OnEditFocusLost", commitLogMax)
   logMaxEb:SetScript("OnEscapePressed", function(s) commitLogMax(s); s:ClearFocus() end)
   logMaxEb:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText("Lines to show")
-    GameTooltip:AddLine("How many of the most recent log lines to DISPLAY. The full log is always kept (never trimmed). Default 150.", 1, 1, 1, true); GameTooltip:Show()
+    showTip(self, "Lines to show", "How many of the most recent log lines to DISPLAY. The full log is always kept (never trimmed). Default 150.")
   end)
   logMaxEb:SetScript("OnLeave", GameTooltip_Hide)
   -- Shared log-viewer widget: chip row (per-kind show/hide) + scrolling text body. The `action` chip
   -- replaces the old standalone "show actions" checkbox; persistence is via SBFDB.logActions.
   -- semantic per-outcome colors (carry meaning -> kept as-is); only `buff` follows the theme accent.
   -- `buff` is the Midnight "a special chest dropped" NOTIFICATION (the Patiently-Rewarded watcher) — labeled
-  -- CHEST. Its stored kind stays "buff" for back-compat (old entries still render). `gathered` = container /
-  -- GameObject loot opened outside a fishing channel (chests, fished-up openables); olive, distinct from all.
-  local KIND_COLOR = { caught = "33ff33", expired = "aaaaaa", missed = "ffaa44", interrupt = "ff6060", castfail = "ff8844", action = "7fb0e6", buff = "ffcf40", skill = "d0a0ff", gathered = "c0d860",   -- skill = Haul's lavender
-    start = "45c4a0", stop = "ff6060", pause = "ffaa44", resume = "45c4a0", fold = "c080ff", include = "808080", exclude = "a0a0a0" }   -- session lifecycle markers
-  local KIND_LABEL = { caught = "CAUGHT", expired = "expired", missed = "MISSED", interrupt = "interrupt", castfail = "cast-fail", action = "", buff = "CHEST", skill = "SKILL UP", gathered = "GATHERED",
+  -- CHEST. Its stored kind stays "buff" for back-compat (old entries still render); its LABEL is "chest up"
+  -- (a spawn heads-up) so it doesn't collide with the real chest-loot row below. `chest` = the two fished-up
+  -- world chests (objID 540505 / 617089) opened for loot — Haul's own source name is "chest", so we match it
+  -- (unified language). `gathered` is the OLD (removed) gather feature's kind — kept in the maps only so any
+  -- legacy rows still render with a real "gathered" label; it's HIDDEN from the Kind filter (see FILTER_HIDE_KINDS
+  -- below) since nothing logs it anymore. Olive, distinct from all.
+  -- Per-KIND colors READ from the shared Theme.NAMED_COLORS single-source (which was seeded from this very
+  -- scheme), so retuning a color there updates SBF's log too — no more hardcoded drift. The fallback hex
+  -- keeps it correct if an older embedded GECTheme predates a name. skill unifies to Haul's shared lilac.
+  local function kcol(name, fb) return (Theme.ColorToHex and Theme.ColorToHex(name)) or fb end
+  local KIND_COLOR = { caught = kcol("caught","33ff33"), expired = kcol("expired","aaaaaa"), nothing = kcol("nothing","dd8faf"), missed = kcol("missed","ffaa44"), interrupt = kcol("interrupt","ff6060"), castfail = kcol("castfail","ff8844"), action = kcol("action","7fb0e6"), buff = kcol("buff","ffcf40"), skill = kcol("skill","c7a2ff"), chest = kcol("chest","c0d860"), gathered = kcol("gathered","c0d860"),
+    start = kcol("start","45c4a0"), stop = kcol("stop","ff6060"), pause = kcol("pause","ffaa44"), resume = kcol("resume","45c4a0"), fold = kcol("fold","c080ff"), include = kcol("include","808080"), exclude = kcol("exclude","a0a0a0") }   -- session lifecycle markers
+  local KIND_LABEL = { caught = "CAUGHT", expired = "EXPIRED", nothing = "NOTHING", missed = "MISSED", interrupt = "interrupt", castfail = "cast-fail", action = "ACTION", buff = "chest up", skill = "SKILL UP", chest = "CHEST", gathered = "gathered",
     start = "start", stop = "stop", pause = "pause", resume = "resume", fold = "fold", include = "incl", exclude = "excl" }
+  -- Kinds we don't currently PRODUCE — hidden from the Kind filter dropdown so it isn't cluttered with dead
+  -- entries. They stay in KIND_COLOR/LABEL (so any stray legacy row still renders a real label), and any that
+  -- earns a real use again just gets deleted from this set to reappear in the filter.
+  local FILTER_HIDE_KINDS = { gathered = true, pause = true, resume = true, fold = true, include = true, exclude = true }
   local GSV = LibStub("GECStoreView-1.0")
   local SBF_KINDS = {}
   for k, lab in pairs(KIND_LABEL) do SBF_KINDS[k] = { label = lab, color = KIND_COLOR[k] or "ffffff" } end
   local function sbfDetail(e)
     local s = ""
-    if (e.k == "caught" or e.k == "gathered") and (e.items or e.link or e.name) then
+    if (e.k == "caught" or e.k == "chest" or e.k == "gathered") and (e.items or e.link or e.name) then
       local function one(fi)   -- quality-colored link (else plain name) + xN when stacked
         local item = (fi.link and GSV.ColorItemLink(fi.link)) or ("|cffffffff" .. (fi.name or "?") .. "|r")
         return item .. ((fi.count and fi.count > 1) and (" x" .. fi.count) or "")
@@ -1535,25 +1539,33 @@ local function Build()
     elseif e.k == "action" and e.spell then
       s = "|cff7fb0e6" .. e.spell .. "|r"             -- the action that fired (B2)
     elseif e.k == "interrupt" and e.cause then
-      local nice = e.cause == "moving" and "movement" or e.cause   -- combat / movement / jump / unknown
+      local nice = (SBF.INTERRUPT_CAUSE_LABEL and SBF.INTERRUPT_CAUSE_LABEL[e.cause]) or e.cause   -- one label source (Core)
       s = "|cffff6060(" .. nice .. ")|r"               -- WHY the cast was cut short
+    elseif e.k == "nothing" then
+      s = "|cffdd8faf(empty line)|r"                    -- reeled on time but delivered no loot (and no "no fish")
     elseif e.k == "skill" then
       -- Haul's skill-up color (d0a0ff lavender). Plain "to <level>" — the old ▲ glyph (\226\150\178) isn't
       -- in WoW's font, so it rendered as a tofu box.
       s = "|cffd0a0ff" .. (e.name or "Fishing") .. (e.lvl and (" to " .. e.lvl) or "") .. "|r"
     end
-    if e.dur then s = s .. string.format("  |cff88cc88%.1fs|r", e.dur) end   -- channel time; for a catch = cast -> loot
+    if e.dur then
+      -- channel time; for a catch = cast -> loot. No-catch kinds also carry `exp` (the full expected window),
+      -- shown as dur/exp so a row self-explains WHY it classified (near-exp = ran its full length untouched;
+      -- well under = it resolved on a reel, same as a catch would).
+      if e.exp then s = s .. string.format("  |cff88cc88%.1fs|r|cff5a7a5a/%.0fs|r", e.dur, e.exp)
+      else s = s .. string.format("  |cff88cc88%.1fs|r", e.dur) end
+    end
     return s
   end
   -- per-kind tally line (Haul-style summary). The richer per-fish catch breakdown is a future tab.
-  local SBF_SUMMARY_ORDER = { "caught", "gathered", "expired", "missed", "interrupt", "castfail", "action", "buff", "skill" }
+  local SBF_SUMMARY_ORDER = { "caught", "chest", "expired", "nothing", "missed", "interrupt", "castfail", "action", "buff", "skill" }
   local function sbfSummary()
     local log, n = SBF.FishLog(), {}
     for i = 1, #log do local k = log[i].k; n[k] = (n[k] or 0) + 1 end
     local parts = {}
     for _, k in ipairs(SBF_SUMMARY_ORDER) do
       if n[k] then
-        local word = (KIND_LABEL[k] and KIND_LABEL[k] ~= "" and KIND_LABEL[k]:lower()) or k   -- "buff" -> "chest"
+        local word = (KIND_LABEL[k] and KIND_LABEL[k] ~= "" and KIND_LABEL[k]:lower()) or k   -- "chest" -> "chest", "buff" -> "chest up"
         parts[#parts + 1] = "|cff" .. (KIND_COLOR[k] or "ffffff") .. n[k] .. "|r " .. word
       end
     end
@@ -1643,7 +1655,7 @@ local function Build()
       subzone = logSubzoneCell(rec),
       loc     = logLocCell(rec),
     }
-    if rec.k == "caught" or rec.k == "gathered" then   -- both carry id/name/link/count(/items): one row per distinct item
+    if rec.k == "caught" or rec.k == "chest" or rec.k == "gathered" then   -- both carry id/name/link/count(/items): one row per distinct item
       local list, order, byKey = rec.items or { rec }, {}, {}
       for _, fi in ipairs(list) do
         local key = fi.id or fi.link or fi.name or "?"
@@ -1663,7 +1675,7 @@ local function Build()
     if rec.k == "action" and rec.spell then base.item = "|cff7fb0e6" .. rec.spell .. "|r"
     elseif rec.k == "buff" and rec.name then base.item = "|cffffcf40chest drop|r |cff808080(" .. rec.name .. ")|r"
     elseif rec.k == "interrupt" and rec.cause then
-      base.item = "|cffff6060(" .. (rec.cause == "moving" and "movement" or rec.cause) .. ")|r"
+      base.item = "|cffff6060(" .. ((SBF.INTERRUPT_CAUSE_LABEL and SBF.INTERRUPT_CAUSE_LABEL[rec.cause]) or rec.cause) .. ")|r"
     elseif rec.k == "castfail" and rec.cause then
       local nice = (rec.cause == "los" and "line of sight") or (rec.cause == "nowater" and "no fishable water")
         or (rec.cause == "shallow" and "too shallow") or rec.cause
@@ -1687,7 +1699,7 @@ local function Build()
     local parts = {}
     local lab = KIND_LABEL[rec.k]
     parts[#parts + 1] = (lab and lab ~= "" and lab) or rec.k or ""
-    if rec.k == "caught" or rec.k == "gathered" then
+    if rec.k == "caught" or rec.k == "chest" or rec.k == "gathered" then
       local list = rec.items or { rec }
       for _, fi in ipairs(list) do if fi.name then parts[#parts + 1] = fi.name end end
     elseif rec.k == "action" and rec.spell then parts[#parts + 1] = rec.spell
@@ -1726,6 +1738,7 @@ local function Build()
       return sorted
     end,
     kinds            = SBF_KINDS,
+    kindVisible      = function(k) return not FILTER_HIDE_KINDS[k] end,   -- keep the Kind filter to kinds we actually log
     columns          = SBF_LOG_COLUMNS,
     toRows           = sbfLogRows,
     theme            = Theme,
@@ -1834,9 +1847,7 @@ local function Build()
   local function refreshCharDD() statsCharDD:SetDefaultText(charDDText()) end
   -- whole-element tooltip on the (persistent) character dropdown — set once at build.
   statsCharDD:HookScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Character filter")
-    GameTooltip:AddLine("Show stats for one or more characters. All-time merges the selected characters; uncheck to exclude. Your current character is pinned on top.", 1, 1, 1, true)
-    GameTooltip:Show()
+    showTip(self, "Character filter", "Show stats for one or more characters. All-time merges the selected characters; uncheck to exclude. Your current character is pinned on top.")
   end)
   statsCharDD:HookScript("OnLeave", GameTooltip_Hide)
   -- auto-refresh lifecycle. "live" redraws on each logged event (driven from Core.logFishEvent); a numeric
@@ -1905,11 +1916,7 @@ local function Build()
     local t = statsTip[tipN]
     if not t then t = CreateFrame("Frame", nil, statsChild); t:EnableMouse(true); statsTip[tipN] = t end
     t:SetSize(w, h); t:ClearAllPoints()
-    t:SetScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText(title)
-      if body then GameTooltip:AddLine(body, 1, 1, 1, true) end
-      GameTooltip:Show()
-    end)
+    t:SetScript("OnEnter", function(self) showTip(self, title, body) end)
     t:SetScript("OnLeave", GameTooltip_Hide)
     t:Show(); return t
   end
@@ -1933,25 +1940,21 @@ local function Build()
   -- attach a whole-element tooltip directly to a pooled (non-protected) button — chips / segments / sort /
   -- reset. Safe: these aren't secure/protected frames, so script hooks can't taint a click here.
   local function setBtnTip(b, title, body)
-    b:SetScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText(title)
-      if body then GameTooltip:AddLine(body, 1, 1, 1, true) end
-      GameTooltip:Show()
-    end)
+    b:SetScript("OnEnter", function(self) showTip(self, title, body) end)
     b:SetScript("OnLeave", GameTooltip_Hide)
   end
   -- tooltip text (title, body) for the Stats-page controls. Defined once; keyed for lookup in the render.
   local PERIOD_TIP = {
-    all     = { "All-time", "Your permanent totals — kept across every session and never lost (the log is never deleted). Resets only via the Reset button." },
+    all     = { "All-time", "Your permanent totals - kept across every session and never lost (the log is never deleted). Resets only via the Reset button." },
     session = { "This session", "Activity since the current session started (start a new session to re-baseline it; kept across /reload). Computed live from the fishing log." },
     today   = { "Today", "Activity since local midnight, across all of today's logins. Computed live from the fishing log (back as far as the log buffer holds)." },
   }
   local HEADLINE_TIP = {
-    ["fish"]        = { "Fish caught", "Total items caught — a single cast can land several, and every item counts (gray junk included)." },
-    ["casts"]       = { "Casts", "Fishing attempts that hit the water: caught + expired + missed + interrupted. Cast-fails (never started) aren't counted." },
-    ["avg cast"]    = { "Average cast time", "Average line-in-water time per cast (time fished ÷ casts) — how long a cast runs before it resolves, on average." },
+    ["fish"]        = { "Fish caught", "Total items caught - a single cast can land several, and every item counts (gray junk included)." },
+    ["casts"]       = { "Casts", "Fishing attempts that hit the water: caught + expired + nothing + missed + interrupted. Cast-fails (never started) aren't counted." },
+    ["avg cast"]    = { "Average cast time", "Average line-in-water time per cast (time fished ÷ casts) - how long a cast runs before it resolves, on average." },
     ["catch rate"]  = { "Catch rate", "Casts that landed a catch ÷ total casts. Always 100% or less." },
-    ["time fished"] = { "Time fished", "Actual line-in-water time: the sum of every cast's channel length (cast → catch or expire). This is NOT how long you've been logged in — looting, travel, and the gaps between casts are not counted." },
+    ["time fished"] = { "Time fished", "Actual line-in-water time: the sum of every cast's channel length (cast to catch or expire). This is NOT how long you've been logged in - looting, travel, and the gaps between casts are not counted." },
     ["fish / hr"]   = { "Fish per hour", "Total fish ÷ time fished (line-in-water hours), so it reflects your fishing rate, not wall-clock time." },
   }
   -- Sort-toggle tooltips. Worded to read in BOTH the By-fish list and the By-zone view (it reorders the zones and
@@ -1960,7 +1963,7 @@ local function Build()
     count   = { "Sort by count", "Most caught first (by total items)." },
     name    = { "Sort by name", "Alphabetical." },
     recent  = { "Sort by recent", "Most recent first." },
-    quality = { "Sort by quality", "Best quality first (Epic → … → gray)." },
+    quality = { "Sort by quality", "Best quality first (Epic down to gray)." },
   }
   -- the confirm popup's accept handler (file-scoped dialog -> this closure): reset, then re-render. Never logs.
   SBF._statsResetPopup.onReset = function() if SBF.Stats then SBF.Stats.Reset() end; if SBF.RefreshStats then SBF.RefreshStats() end end
@@ -2052,7 +2055,7 @@ local function Build()
     else
       spanText = "since midnight"
       if roll.firstT and roll.firstT > localMidnight() + 60 then
-        spanText = spanText .. " — earliest shown " .. date("%H:%M", roll.firstT) .. " (log buffer starts later)"
+        spanText = spanText .. " - earliest shown " .. date("%H:%M", roll.firstT) .. " (log buffer starts later)"
       end
     end
     span:SetText(spanText); Theme.Font(span, "textDim")
@@ -2060,13 +2063,13 @@ local function Build()
 
     -- 2) headline row ------------------------------------------------------------------------------------
     local successCasts = kc.caught or 0                                               -- casts that landed a catch (per-cast)
-    local casts = (kc.caught or 0) + (kc.expired or 0) + (kc.missed or 0) + (kc.interrupt or 0)   -- a "cast" = line hit the water
+    local casts = (kc.caught or 0) + (kc.expired or 0) + (kc.nothing or 0) + (kc.missed or 0) + (kc.interrupt or 0)   -- a "cast" = line hit the water
     local totalFish = 0
     for _, it in pairs(roll.items or {}) do totalFish = totalFish + (it.n or 0) end   -- ITEM total (a cast can land several)
-    local rate = casts > 0 and string.format("%d%%", math.floor(successCasts / casts * 100 + 0.5)) or "—"   -- cast-based, stays <=100%
+    local rate = casts > 0 and string.format("%d%%", math.floor(successCasts / casts * 100 + 0.5)) or "-"   -- cast-based, stays <=100%
     local secs = roll.totalDur or 0
-    local avgCast = casts > 0 and string.format("%.1fs", secs / casts) or "—"   -- average line-in-water time per cast
-    local fph = secs > 0 and string.format("%.1f", totalFish / (secs / 3600)) or "—"
+    local avgCast = casts > 0 and string.format("%.1fs", secs / casts) or "-"   -- average line-in-water time per cast
+    local fph = secs > 0 and string.format("%.1f", totalFish / (secs / 3600)) or "-"
     local blocks = {
       { tostring(totalFish), "fish" }, { tostring(casts), "casts" }, { avgCast, "avg cast" },
       { rate, "catch rate" }, { fmtDur(secs), "time fished" }, { fph, "fish / hr" },
@@ -2083,9 +2086,9 @@ local function Build()
     -- divider + 3) event tally bars ----------------------------------------------------------------------
     local div1 = texAcquire(); div1:SetPoint("TOPLEFT", PAD, y); div1:SetSize(W - PAD * 2, 1); div1:SetColorTexture(unpack(Theme.colors.divider)); y = y - 10
     local eh = fsAcquire("GameFontNormal"); eh:SetPoint("TOPLEFT", PAD, y); eh:SetText(Theme.Accent("Events"))
-    tipAcquire(120, 16, "Cast outcomes", "caught = landed loot · expired = ran full length, no bite · missed = clicked too early/late · interrupt = cut short · cast-fail = never started (not aimed at water)."):SetPoint("TOPLEFT", PAD, y)
+    tipAcquire(120, 16, "Cast outcomes", "caught = landed loot · expired = ran full length, no bite · nothing = reeled on time but delivered no loot · missed = clicked too early/late · interrupt = cut short (moved/combat/jump, a chest took the press, or canceled with no reel) · cast-fail = never started (not aimed at water)."):SetPoint("TOPLEFT", PAD, y)
     y = y - 18
-    local tallyOrder = { "caught", "expired", "missed", "interrupt", "castfail" }
+    local tallyOrder = { "caught", "expired", "nothing", "missed", "interrupt", "castfail" }
     local trows, maxN = {}, 0
     for _, kk in ipairs(tallyOrder) do local n = kc[kk] or 0; if n > 0 then trows[#trows + 1] = { kk, n }; if n > maxN then maxN = n end end end
     table.sort(trows, function(a, b) return a[2] > b[2] end)
@@ -2106,22 +2109,26 @@ local function Build()
         y = y - 16
       end
     end
-    -- interrupt cause breakdown (combat vs movement vs jump) — a dim sub-line under the bars. "unknown" is the
-    -- remainder (kc.interrupt minus the categorized causes) so it always reconciles to the interrupt total.
+    -- interrupt cause breakdown — a dim sub-line under the bars. Iterates SBF.INTERRUPT_CAUSES (Core owns the
+    -- vocabulary; the classifier is its only emitter) rather than hardcoding a subset, which is what previously
+    -- dumped `canceled`/`looted`/`unattributed` into a bucket labelled "cause couldn't be determined" while the
+    -- Log tab printed the real cause for the same rows. A remainder is still shown so the parts always reconcile
+    -- to the interrupt total, but it now means "a cause this build has never heard of", which is itself a signal.
     if (kc.interrupt or 0) > 0 then
       local ic = roll.interrupts or {}
-      local cc, mv, jp = ic.combat or 0, ic.moving or 0, ic.jump or 0
-      local unk = (kc.interrupt or 0) - cc - mv - jp
-      local parts = {}
-      if cc > 0 then parts[#parts + 1] = "combat " .. cc end
-      if mv > 0 then parts[#parts + 1] = "movement " .. mv end
-      if jp > 0 then parts[#parts + 1] = "jump " .. jp end
-      if unk > 0 then parts[#parts + 1] = "unknown " .. unk end
+      local parts, known = {}, 0
+      for _, c in ipairs(SBF.INTERRUPT_CAUSES or {}) do
+        local n = ic[c.key] or 0
+        known = known + n
+        if n > 0 then parts[#parts + 1] = c.label .. " " .. n end
+      end
+      local unk = (kc.interrupt or 0) - known
+      if unk > 0 then parts[#parts + 1] = "uncategorized " .. unk end
       if #parts > 0 then
         local sub = fsAcquire("GameFontHighlightSmall"); sub:SetPoint("TOPLEFT", PAD + 8, y)
         sub:SetText("|cff" .. (KIND_COLOR.interrupt or "ff6060") .. "interrupts|r  " .. table.concat(parts, "   ·   "))
         Theme.Font(sub, "textDim")
-        tipAcquire(W - PAD * 2 - 8, 15, "Why casts were interrupted", "combat = pulled into combat mid-cast · movement = you moved · jump · unknown = cause couldn't be determined. Detected during the cast."):SetPoint("TOPLEFT", PAD + 8, y)
+        tipAcquire(W - PAD * 2 - 8, 15, "Why casts were interrupted", "combat = pulled into combat mid-cast · movement = you moved · jump · looted = a chest took the cast instead of the bobber · canceled = the line was never reeled, usually Escape · unknown = older casts, from before SBF recorded a reason. Detected during the cast."):SetPoint("TOPLEFT", PAD + 8, y)
         y = y - 15
       end
     end
@@ -2134,7 +2141,7 @@ local function Build()
     setBtnTip(segF, "By fish", "Every distinct item caught, with counts. Sort by count, name, most-recent, or quality.")
     local segZ = btnAcquire(72, "By zone")
     segZ:SetPoint("TOPLEFT", PAD + 76, y); paintToggle(segZ, statsSeg == "zone"); segZ:SetScript("OnClick", function() statsSeg = "zone"; SBF.RefreshStats() end)
-    setBtnTip(segZ, "By zone", "Catches grouped by continent → zone (sub-areas merged). Sort reorders the zones; click a zone to expand its top fish.")
+    setBtnTip(segZ, "By zone", "Catches grouped by continent, then zone (sub-areas merged). Sort reorders the zones; click a zone to expand its top fish.")
     do                                                           -- the sort toggle drives BOTH the fish list and the zone view
       local sl = fsAcquire("GameFontHighlightSmall"); sl:SetPoint("TOPLEFT", PAD + 160, y + 4); sl:SetText("sort:"); Theme.Font(sl, "textDim")
       local sx = PAD + 192
@@ -2189,7 +2196,7 @@ local function Build()
           local fs = fsAcquire(); fs:SetPoint("TOPLEFT", PAD + 4, y); fs:SetWidth(W - PAD * 2 - 96); fs:SetText(label)
           -- percent is this fish's share of the WHOLE By-fish list (= the period's totalFish), dimmed left of the count
           local cnt = fsAcquire(); cnt:SetPoint("TOPRIGHT", statsChild, "TOPRIGHT", -PAD, y); cnt:SetJustifyH("RIGHT"); cnt:SetText(pctTag(count, totalFish) .. Theme.Accent(count))
-          if row.trash then tipAcquire(W - PAD * 2 - 6, 16, "Vendor trash", "All gray (Poor) junk lumped into one row to save space — still counted in your totals."):SetPoint("TOPLEFT", PAD + 4, y)
+          if row.trash then tipAcquire(W - PAD * 2 - 6, 16, "Vendor trash", "All gray (Poor) junk lumped into one row to save space - still counted in your totals."):SetPoint("TOPLEFT", PAD + 4, y)
           else itemTipAcquire(W - PAD * 2 - 6, 16, row.it and row.it.link, row.id):SetPoint("TOPLEFT", PAD + 4, y) end   -- item tooltip on the fish name
           y = y - 16
         end
@@ -2233,10 +2240,10 @@ local function Build()
           for _, zr in ipairs(c.zones) do
             local z = zr.z; local zk = z.kinds or {}
             local zCaught = zk.caught or 0
-            local zCasts = (zk.caught or 0) + (zk.expired or 0) + (zk.missed or 0) + (zk.interrupt or 0)
+            local zCasts = (zk.caught or 0) + (zk.expired or 0) + (zk.nothing or 0) + (zk.missed or 0) + (zk.interrupt or 0)
             local zName = (z.zone and z.zone ~= "" and z.zone) or "(unknown zone)"
             local open = statsZoneOpen[zr.key]
-            local zfs = fsAcquire(); zfs:SetPoint("TOPLEFT", PAD + 10, y); zfs:SetWidth(W - PAD * 2 - 96); zfs:SetText((open and "− " or "+ ") .. zName)
+            local zfs = fsAcquire(); zfs:SetPoint("TOPLEFT", PAD + 10, y); zfs:SetWidth(W - PAD * 2 - 96); zfs:SetText((open and "- " or "+ ") .. zName)
             local zc = fsAcquire("GameFontHighlightSmall"); zc:SetPoint("TOPRIGHT", statsChild, "TOPRIGHT", -PAD, y); zc:SetJustifyH("RIGHT")
             zc:SetText("|cff" .. (KIND_COLOR.caught or "33ff33") .. zCaught .. "|r / " .. zCasts)
             local hit = hitAcquire(W - PAD * 2 - 6, 15); hit:SetPoint("TOPLEFT", PAD + 6, y + 1)
@@ -2290,7 +2297,7 @@ local function Build()
     y = y - 12
     local reset = btnAcquire(150, "Reset all-time stats"); reset:SetPoint("TOPLEFT", PAD, y)
     reset:SetScript("OnClick", function() StaticPopup_Show("SBF_RESET_STATS") end)
-    setBtnTip(reset, "Reset stats", "Starts your stats fresh from now — all-time, Today, and This session all reset to zero and rebuild as you fish. Your fishing log keeps its full history (it is never deleted).")
+    setBtnTip(reset, "Reset stats", "Starts your stats fresh from now - all-time, Today, and This session all reset to zero and rebuild as you fish. Your fishing log keeps its full history (it is never deleted).")
     -- refresh-rate cycle button (right of Reset): Live -> 1s -> 2s -> 5s -> Off -> (wrap). "Live" updates on
     -- each catch; the numeric modes poll on a timer; "Off" is manual-only. Click advances + persists the mode.
     local REFRESH_MODES = { "live", 1, 2, 5, "off" }
@@ -2306,9 +2313,7 @@ local function Build()
       SBF.RefreshStats()                                              -- redraw now (updates this button's own label too)
     end)
     rr:SetScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText("Stats refresh rate")
-      GameTooltip:AddLine("How often this page updates: |cffffd100Live|r redraws on every catch, |cffffd1001s/2s/5s|r poll on a timer, |cffffd100Off|r only updates when you click a button. Click to cycle.", 1, 1, 1, true)
-      GameTooltip:Show()
+      showTip(self, "Stats refresh rate", "How often this page updates: |cffffd100Live|r redraws on every catch, |cffffd1001s/2s/5s|r poll on a timer, |cffffd100Off|r only updates when you click a button. Click to cycle.")
     end)
     rr:SetScript("OnLeave", GameTooltip_Hide)
     y = y - 32
@@ -2363,15 +2368,13 @@ local function Build()
       end
     end)
     charDD:HookScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Character")
-      GameTooltip:AddLine("View another character's fishing skill (each one's data is cached the first time it opens Professions). Your current character is pinned on top.", 1, 1, 1, true)
-      GameTooltip:Show()
+      showTip(self, "Character", "View another character's fishing skill (each one's data is cached the first time it opens Professions). Your current character is pinned on top.")
     end)
     charDD:HookScript("OnLeave", GameTooltip_Hide)
     -- Short intro over the list (broken across lines so it's not one crammed run).
     local note = pSkill:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     note:SetPoint("TOPLEFT", 6, -62); note:SetWidth(380); note:SetJustifyH("LEFT"); note:SetSpacing(3)
-    note:SetText("Fishing level / max in each expansion.\n\"—\" means no skill in that line yet.")
+    note:SetText("Fishing level / max in each expansion.\n\"-\" means no skill in that line yet.")
     -- one row per expansion (created once; RefreshSkillBook fills them). Two columns: name | level/max.
     local SB_ROW_TOP, SB_ROW_H = -100, 22
     local skillRows = {}
@@ -2389,90 +2392,34 @@ local function Build()
     local divider = pSkill:CreateTexture(nil, "ARTWORK")
     divider:SetColorTexture(1, 1, 1, 0.10); divider:SetHeight(1)
     divider:SetPoint("TOPLEFT", 8, listBottom - 12); divider:SetPoint("TOPRIGHT", pSkill, "TOPRIGHT", -8, listBottom - 12)
-    -- Opening the fishing journal warms the per-expansion skill cache. A protected cast can only run
-    -- from a hardware click on a SecureActionButton, so both buttons below use the secure template +
-    -- click registration, not a plain OnClick. Theme.Button is taint-safe here (native highlight
-    -- texture, no OnEnter/OnMouseDown hooks), so styling doesn't kill the cast.
+    -- NO secure journal buttons here (removed 2026-07-30): a SecureActionButton on this page is a protected
+    -- frame, and its presence makes the WHOLE options window un-closable / un-resizable / un-collapsible in
+    -- combat. WoW requires the Fishing Journal be opened once per character to load skill data; a static note
+    -- asks the player to do that. The old flash-to-warm convenience is being replaced by an automatic
+    -- refresh-on-cast option that rides the existing fishing button (no new secure frames). See the SBF spec.
+    local skillNote = pSkill:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    skillNote:SetPoint("TOPLEFT", 12, listBottom - 26); skillNote:SetWidth(360); skillNote:SetJustifyH("LEFT"); skillNote:SetSpacing(2)
+    skillNote:SetText("Open your Fishing Journal once on this character to load your fishing skill "
+      .. "(a Blizzard requirement - your skill shows automatically after that), or check the box below "
+      .. "and we'll do it for you on your next cast.")
 
-    -- Register the click edge that MATCHES ActionButtonUseKeyDown (via GECBind, exactly like the fishing
-    -- button) + a debug PostClick. A hardcoded "AnyUp" silently DROPS the protected cast on a key-DOWN client
-    -- — THAT is why these two buttons worked on the desktop (CVar=0) but not the laptop (CVar=1). GECBind
-    -- re-syncs the edge on CVAR_UPDATE so it can't drift. Fallback to AnyUp only if the lib is somehow absent.
-    local function secureClicks(b)
-      local GB = _G.LibStub and _G.LibStub:GetLibrary("GECBind-1.0", true)
-      if GB and GB.RegisterSecureClicks then GB.RegisterSecureClicks(b) else b:RegisterForClicks("AnyUp") end
-      b:HookScript("PostClick", function()
-        if SBFDB.debug then
-          print(("|cff45c4a0SBF|r |cff33ff33skillbook click fired|r (%s) — ActionButtonUseKeyDown=%s edge=%s")
-            :format(b:GetName() or "?", tostring(GetCVar and GetCVar("ActionButtonUseKeyDown")),
-              (GB and GB.RegisterSecureClicks) and "GECBind(matched)" or "AnyUp(fallback)"))
-        end
-      end)
-    end
+    -- Refresh-on-cast toggle, placed right where the journal note is. SHARES SBFDB.refreshSkillOnCast with the
+    -- same checkbox on the Settings page (same key, same help tooltip); re-reads on show so the two stay in
+    -- step. Default on. Whole row (box + label) is hoverable for the help (project rule).
+    local rocCb = CreateFrame("CheckButton", nil, pSkill, "UICheckButtonTemplate")
+    rocCb:SetSize(22, 22); rocCb:SetPoint("TOPLEFT", skillNote, "BOTTOMLEFT", -2, -8); Theme.Checkbox(rocCb)
+    rocCb:SetChecked(SBFDB.refreshSkillOnCast ~= false)
+    rocCb:SetScript("OnClick", function(self) SBFDB.refreshSkillOnCast = self:GetChecked() and true or false end)
+    local rocLbl = pSkill:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    rocLbl:SetPoint("LEFT", rocCb, "RIGHT", 4, 0); rocLbl:SetText("Refresh skill on cast"); Theme.Font(rocLbl, "text")
+    local rocZone = CreateFrame("Frame", nil, pSkill); rocZone:EnableMouse(true)
+    rocZone:SetPoint("TOPLEFT", rocCb, "TOPLEFT", 0, 0); rocZone:SetPoint("BOTTOMRIGHT", rocLbl, "BOTTOMRIGHT", 4, -2)
+    helpTip(rocCb, "set.refreshSkillOnCast"); helpTip(rocZone, "set.refreshSkillOnCast")
+    pSkill:HookScript("OnShow", function() rocCb:SetChecked(SBFDB.refreshSkillOnCast ~= false) end)
 
-    -- These two buttons use SecureActionButtonTemplate, so EVERYTHING about them — SetAttribute, the secure
-    -- click registration, even SetPoint/SetSize on a protected frame — is a PROTECTED action WoW BLOCKS in
-    -- combat. If the options window is FIRST built mid-fight (you clicked the minimap in combat), doing this
-    -- inline aborts the whole Build() and the window never shows (the "minimap button does nothing in combat"
-    -- bug). Fix: they live in their OWN builder that simply isn't called in combat. The rest of the window
-    -- builds + opens normally; this little region draws the instant combat ends. You can't cast the journal in
-    -- combat anyway, so nothing is lost. Idempotent (journalBtnsDone) so the deferred call can't double-build.
-    local journalBtnsDone = false
-    local function buildJournalButtons()
-      if journalBtnsDone or InCombatLockdown() then return end
-      journalBtnsDone = true
-      -- Button 1 — "Open Fishing Journal": casts it and LEAVES it open.
-      local openBtn = CreateFrame("Button", "SBFSkillJournalBtn", pSkill, "SecureActionButtonTemplate, UIPanelButtonTemplate")
-      openBtn:SetSize(150, 22); openBtn:SetPoint("TOPLEFT", 12, listBottom - 26)
-      openBtn:SetText("Open Fishing Journal"); Theme.Button(openBtn)
-      secureClicks(openBtn)
-      openBtn:SetAttribute("type", "macro")
-      openBtn:SetAttribute("macrotext", "/cast Fishing Journal")
-      local openNote = pSkill:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-      openNote:SetPoint("LEFT", openBtn, "RIGHT", 12, 0); openNote:SetWidth(200); openNote:SetJustifyH("LEFT"); openNote:SetSpacing(2)
-      openNote:SetText("Opens your journal to load / refresh the skill data live (once per character).")
-
-      -- Button 2 — "Refresh Skill (flash)": casts the journal, then immediately closes it. The cast opens
-      -- the ProfessionsFrame (loading Blizzard_Professions if needed) and fires TRADE_SKILL_LIST_UPDATE,
-      -- which is exactly when the per-expansion data becomes readable and the GECStore cache warms. A
-      -- hidden listener catches that event and hides the frame ONE tick later (C_Timer.After 0) so the
-      -- cache-reading handlers run first — the user sees only a brief flash, and the Skill Book warms.
-      -- PostClick fires AFTER the secure action completes, so setting the flag there doesn't taint the cast.
-      local warmBtn = CreateFrame("Button", "SBFSkillWarmBtn", pSkill, "SecureActionButtonTemplate, UIPanelButtonTemplate")
-      warmBtn:SetSize(150, 22); warmBtn:SetPoint("TOPLEFT", openBtn, "BOTTOMLEFT", 0, -8)
-      warmBtn:SetText("Refresh Skill (flash)"); Theme.Button(warmBtn)
-      secureClicks(warmBtn)
-      warmBtn:SetAttribute("type", "macro")
-      warmBtn:SetAttribute("macrotext", "/cast Fishing Journal")
-      warmBtn:HookScript("PostClick", function() SBF._journalAutoClose = true end)
-      local warmNote = pSkill:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-      warmNote:SetPoint("LEFT", warmBtn, "RIGHT", 12, 0); warmNote:SetWidth(200); warmNote:SetJustifyH("LEFT"); warmNote:SetSpacing(2)
-      warmNote:SetText("Flashes the journal open+closed to warm the skill data without leaving it up.")
-    end
-    if InCombatLockdown() then   -- first-built mid-fight: draw these the moment combat drops
-      local waiter = CreateFrame("Frame")
-      waiter:RegisterEvent("PLAYER_REGEN_ENABLED")
-      waiter:SetScript("OnEvent", function(self) self:UnregisterEvent("PLAYER_REGEN_ENABLED"); buildJournalButtons() end)
-    else
-      buildJournalButtons()
-    end
-
-    -- The auto-close listener (created once). Only acts when WE initiated the open via the flash button.
-    if not SBF._journalWarmer then
-      local w = CreateFrame("Frame")
-      w:RegisterEvent("TRADE_SKILL_LIST_UPDATE")
-      w:SetScript("OnEvent", function()
-        if not SBF._journalAutoClose then return end
-        SBF._journalAutoClose = nil
-        C_Timer.After(0, function()
-          if _G.ProfessionsFrame and _G.ProfessionsFrame:IsShown() then
-            HideUIPanel(_G.ProfessionsFrame)
-          end
-          if SBF.RefreshSkillBook then SBF.RefreshSkillBook() end
-        end)
-      end)
-      SBF._journalWarmer = w
-    end
+    -- (The journal auto-close listener lives in Core.lua now — created at load so refresh-on-cast works even
+    -- when this window is never opened. The duplicate that used to sit here was dead code, guarded out by
+    -- Core's singleton, so it was removed to stop the two copies drifting apart.)
     -- Fill the rows from the SELECTED character's cache (defaults to the current character). The "(here)"
     -- current-zone marker only makes sense for yourself, so it's suppressed when viewing another character.
     function SBF.RefreshSkillBook()
@@ -2490,7 +2437,7 @@ local function Build()
             r.val:SetText((d.level or 0) .. "/" .. (d.max or d.level or 0)); r.val:SetTextColor(1, 1, 1)
           else
             r.name:SetTextColor(0.5, 0.5, 0.5)
-            r.val:SetText("—"); r.val:SetTextColor(0.5, 0.5, 0.5)
+            r.val:SetText("-"); r.val:SetTextColor(0.5, 0.5, 0.5)
           end
         end
       end
@@ -2535,7 +2482,7 @@ local function Build()
     -- the "does it all automatically" one-liner (restored): everything the single key handles for you.
     local desc = pAbout:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     desc:SetPoint("TOP", tag, "BOTTOM", 0, -8); desc:SetWidth(440); desc:SetJustifyH("CENTER")
-    desc:SetText("One key runs your whole fishing loop — cast, wait, loot, recast — and handles your food, "
+    desc:SetText("One key runs your whole fishing loop - cast, wait, loot, recast - and handles your food, "
       .. "drink, lures, chum, buffs, the dinghy, and fighting back when something attacks you, all automatically.")
     Theme.Font(desc, "textDim")
 
@@ -2851,7 +2798,11 @@ local function Build()
       if panel._colReflow then panel._colReflow() end
     end)
   end)
-  panel:HookScript("OnHide", function() SBFDB.shown = false end)
+  -- Persist "user closed the window" — but NOT when Core's combat watcher auto-hid it (SBF._optAutoHid). The
+  -- auto-hide is transient; persisting shown=false would strand the window hidden if a /reload or disconnect
+  -- happens mid-combat (the transient restore flag is lost, but SBFDB.shown=false survives). Guarding here keeps
+  -- SBFDB.shown=true through the auto-hide, so a reload just re-shows it. (QC: combat-hide persistence.)
+  panel:HookScript("OnHide", function() if not SBF._optAutoHid then SBFDB.shown = false end end)
   local startTab = SBFDB.optTab or "buttons"
   ShowTab(startTab)
 end
@@ -2931,7 +2882,7 @@ function SBF.ShowFocusAudio()
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton"); close:SetPoint("TOPRIGHT", 2, 2)
     local note = f:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     note:SetPoint("TOPLEFT", 12, -28); note:SetWidth(296); note:SetJustifyH("LEFT")
-    note:SetText("Sound levels SBF switches to while fishing — you hear changes live here. Restored when you close.")
+    note:SetText("Sound levels SBF switches to while fishing - you hear changes live here. Restored when you close.")
 
     f._sliders = {}
     -- one labelled 0-100% slider bound to fa()[key]; live-applies the CVar while the preview/fishing is on.

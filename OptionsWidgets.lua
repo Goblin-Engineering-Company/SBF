@@ -161,15 +161,25 @@ local function styleSlot(b)
   paintSlot(b, false)   -- palette slotFill + slotBorder (unselected look)
 end
 
+-- THE one canonical GEC tooltip draw — every SBF tooltip goes through here so they're identical:
+-- ANCHOR_CURSOR (at the pointer, no per-row jumping/edge-flip), an ACCENT-coloured title (never the default
+-- gold/yellow you get from a bare SetText), and a wrapped soft-grey body. Full convention: docs/wow-addons/
+-- tooltip-style.md. Use this for ALL help text; only real game tooltips (SetItemByID/SetSpellByID) differ.
+local function showTip(owner, title, body)
+  if not (owner and title) then return end
+  GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+  GameTooltip:SetText(title, accentRGB())
+  if body then GameTooltip:AddLine(body, 0.85, 0.85, 0.85, true) end
+  GameTooltip:Show()
+end
+ns.opt = ns.opt or {}; ns.opt.showTip = showTip   -- shared with Options.lua's optHelp + inline tips
+
 -- mouseover help: pull the entry from Help.lua by key (at hover time, so /reload updates it).
 local function helpTip(frame, key)
   if not key then return end
   frame:HookScript("OnEnter", function(self)
     local h = SBF.GetHelp and SBF.GetHelp(key); if not h then return end
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetText(h.title or key, accentRGB())
-    if h.body then GameTooltip:AddLine(h.body, 0.85, 0.85, 0.85, true) end
-    GameTooltip:Show()
+    showTip(self, h.title or key, h.body)
   end)
   frame:HookScript("OnLeave", GameTooltip_Hide)
 end
@@ -385,10 +395,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
   end
   rbtn:SetScript("OnClick", function() def.mode = nextMode(curMode()); markDirty(); render() end)
   rbtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Firing mode")
-    GameTooltip:AddLine(MODE_TIP[curMode()] or "", 1, 1, 1, true)
-    GameTooltip:AddLine("Click to change mode.", 0.7, 0.7, 0.7)
-    GameTooltip:Show()
+    showTip(self, "Firing mode", (MODE_TIP[curMode()] or "") .. "\n\nClick to change mode.")
   end)
   rbtn:SetScript("OnLeave", GameTooltip_Hide)
 
@@ -403,13 +410,9 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
     expanded = not expanded; render()
   end)
   ehandle:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetText(expanded and "Click to collapse" or "Fill this slot")
-    if not expanded then
-      local kinds = (slotDef and slotDef.allowsSpell) and "item, toy, macro, or spell" or "item, toy, or macro"
-      GameTooltip:AddLine("Drag an " .. kinds .. " here to fill it.", 1, 1, 1, true)
-    end
-    GameTooltip:Show()
+    local kinds = (slotDef and slotDef.allowsSpell) and "item, toy, macro, or spell" or "item, toy, or macro"
+    showTip(self, expanded and "Click to collapse" or "Fill this slot",
+      (not expanded) and ("Drag an " .. kinds .. " here to fill it.") or nil)
   end)
   ehandle:SetScript("OnLeave", GameTooltip_Hide)
   ehandle:SetScript("OnReceiveDrag", receiveDrop)        -- empty slot: drop a bag item to add it
@@ -545,7 +548,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
           else
             local zs = {}; for _, n in pairs(self.maps or {}) do zs[#zs + 1] = n end
             GameTooltip:AddLine("Used in: " .. table.concat(zs, ", "), 0.6, 0.8, 1, true)
-            if not self.zoneOk then GameTooltip:AddLine("|cffffaa00!|r not confirmed in THIS zone — may not work here") end
+            if not self.zoneOk then GameTooltip:AddLine("|cffffaa00!|r not confirmed in THIS zone - may not work here") end
           end
           GameTooltip:AddLine("shift-click: forget (un-learn from this slot)", 1, 0.5, 0.5)
           GameTooltip:AddLine("shift-right-click: toggle works-in-all-zones", 0.5, 0.5, 0.5)
@@ -652,17 +655,17 @@ local function MakeItemButton(parent, x, y, def, onChange, slotId)
   b:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     if self._isDefault and self.slotId == "fishing" then        -- dim fishing-icon default
-      GameTooltip:SetText("Cast Fishing — default")
-      GameTooltip:AddLine("Casts Fishing (wrapped with your sit/cast settings). Drag a macro/item here to override.", 0.8, 0.8, 0.8, true)
+      GameTooltip:SetText("Cast Fishing - default", accentRGB())
+      GameTooltip:AddLine("Casts Fishing (wrapped with your sit/cast settings). Drag a macro/item here to override.", 0.85, 0.85, 0.85, true)
     elseif self._isDefault and self.slotId == "combat" then     -- dim gear-icon default
-      GameTooltip:SetText("Combat — default")
-      GameTooltip:AddLine("Targets the nearest enemy, then casts Single-Button Assistant. Drag your own macro here, or right-click to clear back to default.", 0.8, 0.8, 0.8, true)
+      GameTooltip:SetText("Combat - default", accentRGB())
+      GameTooltip:AddLine("Casts Single-Button Assistant at whatever you are already fighting. Type /sbf addtarget on to also grab the nearest enemy. Drag your own macro here, or right-click to clear back to default.", 0.85, 0.85, 0.85, true)
     elseif def.item then GameTooltip:SetHyperlink(def.item)
     elseif def.spell and GameTooltip.SetSpellByID then GameTooltip:SetSpellByID(def.spell)
     elseif def.macro then
-      GameTooltip:SetText("Macro"); GameTooltip:AddLine(def.macro, 1, 1, 1, true)
+      GameTooltip:SetText("Macro", accentRGB()); GameTooltip:AddLine(def.macro, 0.85, 0.85, 0.85, true)
     else
-      GameTooltip:SetText("Drag an item, spell, macro, or toy here")
+      GameTooltip:SetText("Drag an item, spell, macro, or toy here", accentRGB())
       GameTooltip:AddLine("right-click to clear", 0.7, 0.7, 0.7)
     end
     GameTooltip:Show()
@@ -723,7 +726,7 @@ local function WarnKeyConflict(combo)
   local action = GetBindingAction(combo, true)
   if action and action ~= "" and not action:match("^CLICK SBF") then
     print("|cff45c4a0SBF|r heads-up: |cffffd100" .. combo .. "|r is also bound to |cffffffff"
-      .. GECBind.BindingName(action) .. "|r — SBF will override it while active.")
+      .. GECBind.BindingName(action) .. "|r - SBF will override it while active.")
   end
 end
 
@@ -1021,6 +1024,10 @@ local function buildCfgPopup()
   local function commitT(self)   -- apply only; caller clears focus (avoids focus-lost recursion)
     local def = p._def; if not def then return end
     local n = math.max(1, math.floor(tonumber(self:GetText()) or 1)); def["repeat"] = n
+    -- ZERO the outstanding burst debt: an in-flight _owe was seeded from the OLD count, so leaving it would
+    -- keep firing the old (possibly much larger) burst until it drained — the "changed it to 5 but it threw
+    -- 77" bug. The new count takes effect on the NEXT fresh burst, not a stale one.
+    def._owe = 0
     markDirty()        -- chum burst count -> unsaved edit
     self:SetText(tostring(n))
   end
@@ -1028,9 +1035,7 @@ local function buildCfgPopup()
   tf:SetScript("OnEditFocusLost", commitT)
   tf:SetScript("OnEscapePressed", function(s) commitT(s); s:ClearFocus() end)
   tf:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Throw count (burst)")
-    GameTooltip:AddLine("How many to throw in a burst when due — one per key press — then fish until the buff runs low.", 1, 1, 1, true)
-    GameTooltip:Show()
+    showTip(self, "Throw count (burst)", "How many to throw in a burst when due - one per key press - then fish until the buff runs low.")
   end)
   tf:SetScript("OnLeave", GameTooltip_Hide)
   p.repeatField = tf
@@ -1133,7 +1138,7 @@ local function buildCfgPopup()
     -- accurate hint for THIS slot's actual rows: don't say "type to correct" when every row is locked.
     local hint
     if anyFixed and not anyEditable then
-      hint = "These are built-in buffs (curated boats / spells) — fixed, nothing to edit."
+      hint = "These are built-in buffs (curated boats / spells) - fixed, nothing to edit."
     elseif anyFixed then
       hint = "Empty = not learned yet (cast it once). Type to correct; right-click to relearn. "
         .. "Greyed rows (curated boats / spells) are built-in and can't be edited."
@@ -1247,10 +1252,8 @@ local function MakeRow(parent, y, def, labelText, src, reflow)
     if SBF.Apply then SBF.Apply() end
   end)
   lblBtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetText(def.skip and "Inactive — left-click to activate" or "Active — left-click to deactivate")
-    GameTooltip:AddLine("right-click: configure (active / key)", 0.7, 0.7, 0.7)
-    GameTooltip:Show()
+    showTip(self, def.skip and "Inactive - left-click to activate" or "Active - left-click to deactivate",
+      "right-click: configure (active / key)")
   end)
   lblBtn:SetScript("OnLeave", GameTooltip_Hide)
 
@@ -1293,7 +1296,7 @@ local function MakeRow(parent, y, def, labelText, src, reflow)
         if SBF.ClearLearnedBuff then SBF.ClearLearnedBuff(key) else def.buff, def.buffFor, def.buffSpell = nil, nil, nil end
         markDirty()          -- cleared the slot's learned buff -> unsaved edit
         self:SetText(""); self:ClearFocus()
-        print("|cff45c4a0SBF|r cleared " .. key .. " buff (slot + item cache) — re-learns on next cast.")
+        print("|cff45c4a0SBF|r cleared " .. key .. " buff (slot + item cache) - re-learns on next cast.")
       end
     end)
     -- live-fill with the buff the engine is watching (learned name, or the raft/toy
@@ -1306,9 +1309,7 @@ local function MakeRow(parent, y, def, labelText, src, reflow)
       if watched ~= self:GetText() then self:SetText(watched) end
     end)
     bf:SetScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:SetText("Buff to watch")
-      GameTooltip:AddLine("Recasts when this buff is gone/low. Auto-fills when detected; type to override; right-click to unlearn now.", 1, 1, 1, true)
-      GameTooltip:Show()
+      showTip(self, "Buff to watch", "Recasts when this buff is gone/low. Auto-fills when detected; type to override; right-click to unlearn now.")
     end)
     bf:SetScript("OnLeave", GameTooltip_Hide)
   end
