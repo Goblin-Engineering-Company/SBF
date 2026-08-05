@@ -1,4 +1,4 @@
-# SBF 2026.08.04.7
+# SBF 2026.08.04.8
 
 A lot of bug fixes in this one. Most of them only bite in specific situations, so
 you may never have hit them, but if you did they were annoying. There are some
