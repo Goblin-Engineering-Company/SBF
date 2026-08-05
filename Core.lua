@@ -2417,31 +2417,6 @@ function SBF.MouseApply()
   end
 end
 
--- /sbf mouse — diagnostics for tuning the double-click window.
-function SBF.DebugMouse()
-  local m = (SBFDB and SBFDB.mouse) or {}
-  print("|cff45c4a0SBF mouse|r double-click fishing:")
-  print(string.format("  enabled=%s  debug=%s  detect=%s  two-button=%s  in-combat=%s  mouselook=%s  armed=|cffffd100%s|r",
-    m.enabled and "|cff33ff33ON|r" or "|cff808080OFF|r",
-    m.debug and "|cff33ff33ON|r" or "|cff808080OFF|r",
-    mouseUsingFallback and "GLOBAL_MOUSE_DOWN(fallback)" or "WorldFrame:OnMouseDown",
-    tostring(SBFDB and SBFDB.requireTwoButtons and true or false),
-    tostring(InCombatLockdown()), tostring(IsMouselooking and IsMouselooking() or false),
-    tostring(mouseArmedToken or "none")))
-  print(string.format("  fishButton=|cffffd100%s|r  lootButton=|cffffd100%s|r  doubleSec=|cffffd100%.2f|r  (min %dms, arm-on-2nd + MouselookStop; fallback %dms)",
-    tostring(m.fishButton), tostring(m.lootButton), m.doubleSec or 0.4,
-    math.floor(MOUSE_MIN * 1000 + 0.5), math.floor(MOUSE_FALLBACK * 1000 + 0.5)))
-  local target, isGame = interactTarget()
-  print(string.format("  interact -> %s (%s)", tostring(target), isGame and "game binding" or "secure click"))
-  local g = SBF._mouseGaps or {}
-  if #g == 0 then
-    print("  recent double-click gaps: |cff808080(none yet - double-click your action button to test)|r")
-  else
-    local parts = {}
-    for _, v in ipairs(g) do parts[#parts + 1] = string.format("%dms", math.floor(v * 1000 + 0.5)) end
-    print("  recent double-click gaps: |cffffd100" .. table.concat(parts, "  ") .. "|r")
-  end
-end
 
 
 
