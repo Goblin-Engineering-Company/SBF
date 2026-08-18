@@ -681,9 +681,17 @@ function SBF.Perception()
       if txt then total = total + val; contrib[#contrib + 1] = { src = "gear", name = (GetItemInfo(link)), text = txt, val = val } end
     end
   end
+  -- 12.1 SECRET AURAS: index-based buff access HARD ERRORS for a tainted addon while auras are
+  -- secret (combat / encounters / M+ / PvP) — "GetUnitBuff(): Auras cannot be accessed when secret
+  -- while tainted by 'SBF'". Same family as the GECReader-1.0 MINOR 12 guard; see the long note
+  -- there. No API exists to test secrecy first, so the call is its own probe: pcall it and stop.
+  -- Degrades rather than disappears — the gear/tool perception above still totals; only the buff
+  -- contributions drop out while secret. This runs on Haul's {sbf.perception} token too, so an
+  -- unguarded throw here surfaces as a Haul error (Window.lua BuildFields) on every field build.
   local i = 1
-  while i <= 60 do
-    local data = C_TooltipInfo and C_TooltipInfo.GetUnitBuff and C_TooltipInfo.GetUnitBuff("player", i)
+  while i <= 60 and C_TooltipInfo and C_TooltipInfo.GetUnitBuff do
+    local ok, data = pcall(C_TooltipInfo.GetUnitBuff, "player", i)
+    if not ok then break end                                    -- auras secret: keep the gear total
     if not (data and data.lines and data.lines[1]) then break end
     local txt, val = scanPerception(data)
     if txt then total = total + val; contrib[#contrib + 1] = { src = "buff", name = data.lines[1].leftText, text = txt, val = val } end
