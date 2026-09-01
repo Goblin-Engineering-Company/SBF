@@ -1339,6 +1339,20 @@ local function Build()
       },
       { check = C("Show Warband items",
           function() return SBFDB.showWarbandItems ~= false end, function(v) SBFDB.showWarbandItems = v end, "set.showWarbandItems") },
+      -- the way BACK from a shift+left hide. Off by default (hidden means hidden); on, suppressed items
+      -- reappear dimmed in every picker so a shift+left-click can restore them.
+      { check = C("Show hidden items  (dimmed - shift+left-click one to restore it)",
+          function() return SBFDB.showHiddenItems end, function(v) SBFDB.showHiddenItems = v and true or false end, "set.showHiddenItems") },
+    },
+
+    { section = "Minimap",
+      { check = C("Hide the minimap button",
+          function() return SBFDB.minimap and SBFDB.minimap.hide end,
+          function(v)
+            SBFDB.minimap = SBFDB.minimap or { pos = 220 }
+            SBFDB.minimap.hide = v and true or nil
+            if SBF.ApplyMinimapVisibility then SBF.ApplyMinimapVisibility() end
+          end, "set.hideMinimap") },
     },
 
     { section = "Optimizations",
@@ -2474,9 +2488,25 @@ local function Build()
     verFS:SetText("Version " .. tostring(ver) .. (SBF.ChannelBadge and SBF.ChannelBadge() or ""))   -- badge dev/prerelease/local
     Theme.Font(verFS, "textDim")
 
+    -- Report a bug — deliberately at the TOP of About. When something is wrong this is the page people open
+    -- first, and a bug report is only worth having if it's the easiest thing on it to find. This is the ONLY
+    -- in-UI route for a shipped user: the dev build bar is dev-gated AND stripped, so a public build has no
+    -- other button. Opens its own self-contained copy window with no dependency on any other addon.
+    local bug = CreateFrame("Button", nil, pAbout, "UIPanelButtonTemplate")
+    bug:SetSize(150, 24); bug:SetPoint("TOP", verFS, "BOTTOM", 0, -10)
+    bug:SetText("Report a bug"); Theme.Button(bug)
+    bug:SetScript("OnClick", function() if SBF.ShowBugReport then SBF.ShowBugReport() end end)
+    bug:SetScript("OnEnter", function(self)
+      showTip(self, "Report a bug",
+        "Opens a copyable summary of your setup - versions, settings and slot configuration - plus anything "
+        .. "that went wrong this session. Paste it into your report so we can reproduce it. "
+        .. "No character name, realm or guild is included.")
+    end)
+    bug:SetScript("OnLeave", GameTooltip_Hide)
+
     -- tagline — EXACTLY the welcome screen's line: same brand-gold colour code (e8c679) + wording, per request.
     local tag = pAbout:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    tag:SetPoint("TOP", verFS, "BOTTOM", 0, -14)
+    tag:SetPoint("TOP", bug, "BOTTOM", 0, -14)
     tag:SetText("|cffe8c679The only fishing add-on that does it all.|r")
 
     -- the "does it all automatically" one-liner (restored): everything the single key handles for you.
@@ -2541,7 +2571,7 @@ local function Build()
       banner:SetSize(bw, bw / BANNER_ASPECT)
       local dw = math.min(BANNER_MAX_W, sw - 60)
       div:SetWidth(dw); licDiv:SetWidth(dw)                     -- both dividers track the window width
-      pAbout:SetHeight(BANNER_TOP + banner:GetHeight() + 400)  -- fixed stack below (desc + invite + url + button + license)
+      pAbout:SetHeight(BANNER_TOP + banner:GetHeight() + 434)  -- fixed stack below (report button + desc + invite + url + button + license)
       if sf.RefreshScrollBar then sf.RefreshScrollBar() end
     end
     pAbout:HookScript("OnSizeChanged", layoutAbout)

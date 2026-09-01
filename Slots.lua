@@ -19,9 +19,43 @@ SBF = SBF or {}
 -- Class-agnostic default for a fresh character's combat slot: acquire a live enemy, then let WoW's
 -- built-in one-button rotation do the casting. Users override with their own macro (trinkets, CDs, etc.).
 -- No #showtooltip — this is a slot ACTION that SBF embeds into the press macro, not a standalone macro.
-local DEFAULT_COMBAT_TAIL = "/cast Single-Button Assistant"
+-- The assisted-combat cast, resolved the same way the fishing cast is. A hardcoded English spell name in a
+-- macro fails SILENTLY off enUS (see the rule at the fishing resolver below), so this shipped a combat half
+-- that cast nothing at all on a German or French client while the UI and the store listing both promised it.
+-- Resolved LAZILY: at file-scope load the spell APIs are not reliably warm yet.
+local ASSISTED_COMBAT_FALLBACK = "Single-Button Assistant"
+local combatSpellCache
+local function assistedCombatName()
+  if combatSpellCache then return combatSpellCache end
+  local sid
+  if C_AssistedCombat and C_AssistedCombat.GetActionSpell then
+    local ok, v = pcall(C_AssistedCombat.GetActionSpell)
+    if ok then sid = v end
+  end
+  if type(sid) == "number" and C_Spell and C_Spell.GetSpellName then
+    local ok, nm = pcall(C_Spell.GetSpellName, sid)
+    if ok and nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then
+      combatSpellCache = nm
+      return nm
+    end
+  end
+  return ASSISTED_COMBAT_FALLBACK          -- NOT cached: retry once the API warms
+end
+ns.assistedCombatName = assistedCombatName
+local function defaultCombatTail() return "/cast " .. assistedCombatName() end
+local function defaultCombatMacro() return "/targetenemy [noharm][dead]\n" .. defaultCombatTail() end
+ns.defaultCombatMacro = defaultCombatMacro
+-- The stored English form. SavedVariables already hold this exact text for every seeded character, so it
+-- must stay recognisable forever: `combatLine` decides whether to strip /targetenemy by comparing the macro
+-- TEXT, and a locale-dependent default would silently stop matching for everyone already seeded.
+local DEFAULT_COMBAT_TAIL = "/cast " .. ASSISTED_COMBAT_FALLBACK
 local DEFAULT_COMBAT_MACRO = "/targetenemy [noharm][dead]\n" .. DEFAULT_COMBAT_TAIL
 ns.DEFAULT_COMBAT_MACRO = DEFAULT_COMBAT_MACRO
+-- Is this macro OUR default, in either the stored English form or this client's localized one?
+local function isDefaultCombatMacro(line)
+  return line == DEFAULT_COMBAT_MACRO or line == defaultCombatMacro()
+end
+ns.isDefaultCombatMacro = isDefaultCombatMacro
 
 -- Per-character combat & healing slots (class abilities differ per character, so these can never be
 -- account-wide). Keyed by Name-Realm under SBFDB.charSlots, parallel to SBFDB.charGear. `combat` seeds
@@ -31,7 +65,7 @@ function SBF.CharSlots()
   SBFDB.charSlots = SBFDB.charSlots or {}
   local cs = SBFDB.charSlots[k]
   if not cs then
-    cs = { combat = { id = "combat", macro = DEFAULT_COMBAT_MACRO }, heal = { id = "heal" } }
+    cs = { combat = { id = "combat", macro = defaultCombatMacro() }, heal = { id = "heal" } }
     SBFDB.charSlots[k] = cs
   end
   -- combat ALWAYS holds an action: the protected default, or the user's replacement. "Off" is the skip flag,
@@ -39,7 +73,7 @@ function SBF.CharSlots()
   -- — the old `or` only filled a MISSING slot, not an empty one), refill the default and keep any skip flag.
   local cb = cs.combat
   if not cb or not (cb.toy or cb.item or cb.spell or (cb.macro and cb.macro ~= "")) then
-    cs.combat = { id = "combat", macro = DEFAULT_COMBAT_MACRO, skip = cb and cb.skip or nil }
+    cs.combat = { id = "combat", macro = defaultCombatMacro(), skip = cb and cb.skip or nil }
   end
   cs.heal = cs.heal or { id = "heal" }   -- heal has no universal default; it just starts empty
   return cs
@@ -132,7 +166,36 @@ ns.ROTATION_ORDER = ROTATION_ORDER
 
 -- generic consume auras that appear the instant you eat/drink — auto-learn must NOT grab these
 -- (the real buff is "Well Fed"/"Relaxed", which lands a moment later). Generic, not per-slot.
+-- The generic auras that appear the INSTANT you eat/drink, which must never be learned as an item's buff
+-- (the real one — "Well Fed" / "Relaxed" — lands a moment later). These were English literals, so on a
+-- non-English client NONE of them matched: the drink slot happily learned "Trinken" as Sanguithorn Tea's
+-- buff, and from then on tracked the wrong aura entirely. Same defect class as the hardcoded "/cast Fishing".
+-- Resolve the canonical ids to whatever this client calls them, and keep the English strings as a floor so
+-- an unresolvable id cannot make the list emptier than it was.
+local LEARN_SKIP_IDS = { 430, 433, 167152 }        -- Drink / Food / Refreshment
 local LEARN_SKIP = { ["Drink"] = true, ["Food"] = true, ["Eating"] = true, ["Refreshment"] = true }
+local learnSkipResolved = false
+local function resolveLearnSkip()
+  if learnSkipResolved then return end
+  local get = C_Spell and C_Spell.GetSpellName
+  if not get then return end
+  local any = false
+  for _, sid in ipairs(LEARN_SKIP_IDS) do
+    local ok, nm = pcall(get, sid)
+    if ok and nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then
+      LEARN_SKIP[nm] = true; any = true
+    end
+  end
+  learnSkipResolved = any                          -- retry next call if spell data was not ready yet
+end
+-- ONE test, so a caller can never re-introduce the raw table lookup that only worked in English.
+local function isLearnSkipped(name)
+  if not name or name == "" then return false end
+  if LEARN_SKIP[name] then return true end
+  resolveLearnSkip()
+  return LEARN_SKIP[name] and true or false
+end
+ns.isLearnSkipped = isLearnSkipped
 
 -- ===== shared low-level helpers =====
 
@@ -210,16 +273,32 @@ ns.spellName = spellName
 -- We HARDCODE the buff per boat (instead of learning it) so the two boats can't cross-contaminate each
 -- other's learned buff, and so each boat is an always-available Boat-flyout suggestion that can't be lost.
 -- Ordered list (for the flyout) + a id->buff lookup. IDs/buffs verified (wowhead).
+-- Each carries its buff SPELL ID as well as the English name. The name alone is locale-brittle — on a
+-- non-English client `GetBuff("Tuskarr Dinghy")` never matches, effectLeft reads nil, and the boat slot
+-- re-casts forever. The id is the durable identity; the English string is only a last-resort label.
+-- (The catalog covers all four today and outranks this path in seedItemBuff, so this is the fallback for a
+-- boat the catalog does not know — exactly the case where getting it wrong would go unnoticed.)
 local KNOWN_BOATS = {
-  { id = 85500,  buff = "Anglers Fishing Raft" },   -- NO apostrophe (the actual buff/item name; we'd invented one)
-  { id = 166461, buff = "Gnarlwood Waveboard" },
-  { id = 198428, buff = "Tuskarr Dinghy" },
-  { id = 235801, buff = "Personal Fishing Barge" },
+  { id = 85500,  buff = "Anglers Fishing Raft", spell = 124036 },   -- NO apostrophe (the actual buff name)
+  { id = 166461, buff = "Gnarlwood Waveboard",  spell = 288758 },
+  { id = 198428, buff = "Tuskarr Dinghy",       spell = 383268 },
+  { id = 235801, buff = "Personal Fishing Barge", spell = 1218420 },
 }
 ns.KNOWN_BOATS = KNOWN_BOATS
-local KNOWN_BOAT_BUFF = {}
-for _, b in ipairs(KNOWN_BOATS) do KNOWN_BOAT_BUFF[b.id] = b.buff end
-local function knownBoatBuff(id) return KNOWN_BOAT_BUFF[tonumber(id) or id] end
+local KNOWN_BOAT_BUFF, KNOWN_BOAT_SPELL = {}, {}
+for _, b in ipairs(KNOWN_BOATS) do KNOWN_BOAT_BUFF[b.id] = b.buff; KNOWN_BOAT_SPELL[b.id] = b.spell end
+-- prefer the client's own localized name for the buff spell; fall back to the English label
+local function knownBoatBuff(id)
+  id = tonumber(id) or id
+  local sid = KNOWN_BOAT_SPELL[id]
+  if sid and C_Spell and C_Spell.GetSpellName then
+    local ok, nm = pcall(C_Spell.GetSpellName, sid)
+    if ok and nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then return nm end
+  end
+  return KNOWN_BOAT_BUFF[id]
+end
+local function knownBoatSpell(id) return KNOWN_BOAT_SPELL[tonumber(id) or id] end
+ns.knownBoatSpell = knownBoatSpell
 ns.knownBoatBuff = knownBoatBuff
 
 -- the LOCKED per-item knowledge from the bundled catalog (Data.lua -> ns.Catalog.meta[id].knowledge), or nil.
@@ -239,17 +318,46 @@ ns.CatalogKnow = catalogKnow
 --      bobber-ate-chum cross-contamination). buffSpell is the stable identity the due-check matches on.
 --   2) a curated boat's HARDCODED buff (legacy path; catalog now covers boats too but this stays as a fallback).
 --   3) the per-item learned cache (lookup-first; an unknown item clears it so learnBuff catches it next cast).
+-- A LOCAL OVERRIDE of a catalogued buff identity. DEV BUILDS ONLY, on purpose:
+-- letting a client outrank the shipped catalog is the same cross-contamination vector the catalog
+-- precedence exists to prevent, so it must never be a thing a public user's client does silently. In a dev
+-- build it turns "permanently wedged until I ship a new catalog" into "self-healed, and here's the evidence
+-- to fix the catalog with". In a public build IsDev() is hard-false and this returns nil, so the shipped
+-- catalog stays absolute and a stale fact remains a (loudly reported) wedge until the next release.
+-- Written only by the apply-fail path, from a CONFIRMED live aura — never from a single sample.
+local function devBuffOverride(iid)
+  if not (iid and SBF.IsDev and SBF.IsDev()) then return nil end
+  local rec = SBF.ItemKnow(iid)
+  local o = rec and rec.devOverride
+  if o and o.buff and o.buff ~= "" then return o end
+  return nil
+end
+ns.devBuffOverride = devBuffOverride
+
 local function seedItemBuff(def)
   local iid = curItemId(def)
+  -- dev-only local override outranks the catalog (see devBuffOverride); public never reaches this.
+  local ov = devBuffOverride(iid)
+  if ov then
+    def.buff, def.buffFor, def.buffSpell = ov.buff, itemKey(def), ov.buffSpell
+    return
+  end
   local ck = iid and catalogKnow(iid)
-  if ck and ck.buff and ck.buff ~= "" then
+  -- a DEV re-learn armed by the apply-fail path: leave the buff UNSEEDED for one cycle so learnBuff can
+  -- watch the real aura land. Without this the catalog would re-seed the known-wrong value and nothing
+  -- could ever be observed. Public builds never set `relearn`, so the catalog always wins there.
+  local armed = iid and SBF.IsDev and SBF.IsDev() and SBF.ItemKnow(iid) and SBF.ItemKnow(iid).relearn
+  if ck and ck.buff and ck.buff ~= "" and not armed then
     def.buff, def.buffFor, def.buffSpell = ck.buff, itemKey(def), ck.buffSpell
     return
   end
+  if armed then def.buff, def.buffFor, def.buffSpell = nil, nil, nil; return end
   local kb = iid and knownBoatBuff(iid)
   -- keep def.buffSpell in lock-step with def.buff so the spellID-preferring "is the buff up" check can
   -- never read a spellId that belongs to a previously-loaded item.
-  if kb then def.buff, def.buffFor, def.buffSpell = kb, itemKey(def), nil; return end   -- curated boat: name only
+  -- carry the boat's buff SPELL too: effectLeft prefers GetBuffBySpell, and a nil here forced a
+  -- name-only match that cannot work on a non-English client.
+  if kb then def.buff, def.buffFor, def.buffSpell = kb, itemKey(def), knownBoatSpell(iid); return end
   local rec = iid and SBF.ItemKnow(iid)
   local known = rec and rec.buff
   if known and known ~= "" then def.buff, def.buffFor, def.buffSpell = known, itemKey(def), rec.buffSpell
@@ -413,10 +521,52 @@ local function itemCooldown(id)
 end
 ns.itemCooldown = itemCooldown
 
--- ready to APPLY right now: owned AND off cooldown. The picker prefers these so it never loads an item
--- that can't fire (e.g. a bobber on its ~10-min item cooldown while its 60-min buff is what matters).
+-- ---- DEAD ITEMS: the catalog said "chum", the client says "fish" -----------------------------------------
+-- Blizzard can strip an item's use-effect in a patch, and our catalog (Data.lua, generated) has no way to
+-- know. That happened to the Midnight chums: Hollow Grouper / Shimmer Spinefish / Tender Lumifin all lost
+-- their throw, leaving the slot loaded with an item no macro can ever fire — the rotation kept "throwing"
+-- a plain fish forever. GetItemSpell is the client's own answer to "does using this do anything", so ask it.
+--
+-- Deliberately CONSERVATIVE — a false "dead" would silently disable a working item, which is far worse than
+-- a missed one. It only says dead when all three hold:
+--   * the item is really in your BAGS (so the client has it cached — an uncached item returns nil spuriously),
+--   * GetItemInfo resolves (second cache check, belt and braces),
+--   * and GetItemSpell still comes back nil.
+-- Ownership via PlayerHasToy is never judged: a toy-teaching item is consumed once learned, so it is legitimately
+-- absent from bags and has no item spell. Verdicts are cached per session; a flip to dead reports ONCE on the
+-- anomaly channel (-> Feed) so a patch that guts an item announces itself instead of being found by hand.
+local deadCache = {}
+local function itemUsable(id)
+  id = tonumber(id) or id
+  if type(id) ~= "number" then return true end
+  local cached = deadCache[id]
+  if cached ~= nil then return not cached end
+  local count = (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(id)) or (GetItemCount and GetItemCount(id)) or 0
+  if count <= 0 then return true end                       -- not in bags: can't judge, assume fine
+  local info = (C_Item and C_Item.GetItemInfo and C_Item.GetItemInfo(id)) or (GetItemInfo and GetItemInfo(id))
+  if not info then return true end                          -- not cached yet: can't judge, assume fine
+  local getSpell = (C_Item and C_Item.GetItemSpell) or GetItemSpell
+  local ok, sname = pcall(getSpell, id)
+  if not ok then return true end
+  local dead = (sname == nil)
+  deadCache[id] = dead
+  if dead and SBF.Anomaly then
+    local name = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(id)) or tostring(id)
+    SBF.Anomaly("item-dead", "item %s (%s) has NO use effect - you hold %d of them and none can ever fire. "
+      .. "Blizzard stripped it, or the catalog put a plain fish in a consumable slot. Skipping it.",
+      tostring(id), tostring(name), count)
+  end
+  return not dead
+end
+ns.itemUsable = itemUsable
+function SBF.ItemUsable(id) return itemUsable(id) end       -- public: the Options tray + the console audit
+function SBF.ResetDeadItemCache() wipe(deadCache) end
+
+-- ready to APPLY right now: owned AND off cooldown AND actually capable of doing something. The picker
+-- prefers these so it never loads an item that can't fire (e.g. a bobber on its ~10-min item cooldown while
+-- its 60-min buff is what matters, or a chum Blizzard turned back into an ordinary fish).
 local function itemReady(id)
-  return itemOwned(id) and itemCooldown(id) <= 0
+  return itemOwned(id) and itemUsable(id) and itemCooldown(id) <= 0
 end
 
 -- a spell is fireable only if THIS character actually knows it (learned or via talents). This is an
@@ -618,6 +768,22 @@ function nextDueItem(slotDef, def)   -- fills the forward-declared upvalue above
 end
 ns.nextDueItem = nextDueItem
 
+-- Does ANY item in a fireAll slot have its buff up right now? That is proof the slot is applying things
+-- successfully, and it is the evidence the misfire counter should reset on. Whole-slot health ("every item
+-- up") is the wrong bar for a slot that fires one item per press with a per-item hold: a 3-item slot trips
+-- applyMaxTries before it can ever reach it. Read-only: no writes, so a due-check can call it safely.
+local function anyEntryBuffLive(def)
+  for _, id in ipairs((def and def.items) or {}) do
+    local name = entryBuffName(def, id)
+    if name then
+      local b = SBF.GetBuff(name)
+      if b and b.secondsLeft then return true end
+    end
+  end
+  return false
+end
+ns.anyEntryBuffLive = anyEntryBuffLive
+
 -- how many seconds of buff a burst is trying to BUILD to: the throw count x the item's per-throw duration
 -- (catalog knowledge preferred — the locked, cross-validated value — else the learned/observed record).
 -- A stacking chum is +30s/throw, so "burst of 5" aims for ~150s. nil when the per-throw duration is unknown
@@ -634,11 +800,37 @@ local function burstGoal(slotDef, def)
 end
 ns.burstGoal = burstGoal
 
+-- The ONE place the misfire counter is cleared. It used to live inline in slotDue's aura branch, which two
+-- slot kinds never reach: `buffs` returns early (fireAll) and `boat` has role="boat" so it is not in
+-- ROTATION_ORDER and routes through roleBoat instead. Both therefore counted 1,2,3 on perfectly healthy
+-- casts and tripped applyMaxTries every third fire — which, now that a trip wipes learned buff identity and
+-- fires a "the shipped catalog is wrong" anomaly into the public bug report, turned a latent counting bug
+-- into a data-destroying one. A helper, called from every due path, so the next slot kind cannot re-open it.
+local function resetApplyTries(def)
+  if not def then return end
+  def._applyTries = 0
+  def._backoffUntil = nil
+end
+ns.resetApplyTries = resetApplyTries
+
 local function slotDue(slotDef, def)
   local k = slotDef.id
   -- fireAll: due while ANY item still needs applying (one item per press; stays due across presses
   -- until every item's buff is up). Same helper pickItem uses, so they can't disagree.
-  if slotDef.fireAll then return nextDueItem(slotDef, def) ~= nil end
+  if slotDef.fireAll then
+    -- HONOUR THE NAP FIRST. postFire sets _backoffUntil on a trip, but this branch used to return before the
+    -- check at the bottom of this function ever ran — so a fireAll slot took every destructive consequence
+    -- of a trip and none of its protection.
+    if def._backoffUntil and time() < def._backoffUntil then return false end
+    local due = nextDueItem(slotDef, def)
+    -- Reset per SUCCESSFUL APPLICATION, not per whole-slot health. Resetting only on `due == nil` (every
+    -- item up) cannot be reached by a slot with 3+ items: it fires ONE item per press, each takes a 12s
+    -- per-item hold, so the counter hits applyMaxTries BEFORE the first possible reset. The old form covered
+    -- N<=2 only. Any item whose aura reads live proves the slot works, which is the same evidence the
+    -- non-fireAll path uses one screen down.
+    if due == nil or anyEntryBuffLive(def) then resetApplyTries(def) end
+    return due ~= nil
+  end
   -- burst debt (chum): while it still owes casts, force it due (bypass the grace) so consecutive presses
   -- keep throwing to BUILD the stack. BUT the LIVE BUFF TIMER CAPS THE BURST: once the buff has reached what
   -- this burst aims for (burstGoal = count x per-throw seconds), stop and VOID the debt — never keep throwing
@@ -669,7 +861,7 @@ local function slotDue(slotDef, def)
   -- because we fired it" — we always re-check that the buff actually EXISTS. effectLeft present -> not
   -- due, and this clears any misfire streak / back-off (the buff landed, so the slot is healthy).
   local left = effectLeft(slotDef, def)
-  if left then def._applyTries = 0; def._backoffUntil = nil; return left < refresh end
+  if left then resetApplyTries(def); return left < refresh end
   -- effectLeft is nil. If this slot's effect is CHECKABLE — an enchant (tooltip-readable) or an aura whose
   -- buff name we KNOW — then nil means the buff is genuinely GONE, so re-apply NOW. We deliberately do NOT
   -- fall back to the learned buffDuration here: a stale/too-long learned duration (e.g. 3600s) was silently
@@ -778,6 +970,10 @@ local function boatDueKind(slotDef, def)
   -- KEY: gate on ANY configured water-walk buff, not just the cycle's current pick — else with raft up the
   -- picker advances to Levitate, sees ITS buff missing, and casts a 2nd boat on top (the double-cast bug).
   local left = anyBoatBuffLeft(def)
+  -- a water-walk buff is genuinely up = the boat applied = the misfire counter is stale. This is the boat's
+  -- equivalent of slotDue's `if left then` reset, which boat never reaches (role="boat" keeps it out of
+  -- ROTATION_ORDER). Without it the counter climbed on every healthy cast; see resetApplyTries.
+  if left then resetApplyTries(def) end
   if not left then
     -- no water-walk buff detected yet. If we JUST cast (within castLen + boatBuffWait), the buff is very
     -- likely still REGISTERING — WAIT rather than cycle to a 2nd boat (raft->Levitate). Only after the max
@@ -1013,8 +1209,12 @@ local function combatLine(c)
   -- attacker, whereas /targetenemy can wander onto the wrong target (field-tested 2026-07-21). `/sbf addtarget
   -- on` opts it in for spawned-monster spots that don't auto-target. Matched EXACTLY against our default, so a
   -- custom macro (Cobra Shot, etc.) is left completely alone.
-  if line == DEFAULT_COMBAT_MACRO and not (SBFDB and SBFDB.combatTarget) then
-    line = DEFAULT_COMBAT_TAIL
+  -- Accept BOTH the stored English default and this client's localized one, so a character seeded before
+  -- this fix keeps working. And emit the LOCALIZED tail: the stored text is what we recognise, not what we cast.
+  if isDefaultCombatMacro(line) and not (SBFDB and SBFDB.combatTarget) then
+    line = defaultCombatTail()
+  elseif line == DEFAULT_COMBAT_MACRO then
+    line = defaultCombatMacro()                   -- seeded-in-English character: cast the localized name
   end
   return line
 end
@@ -1034,6 +1234,98 @@ ns.describeAction = describeAction
 
 -- The exact macro the Cast Fishing button fires on the next press, for the current state. Shared
 -- by PreClick and the /sbf next debug so what you see is what runs. Returns macro, label, slotKey, timed.
+-- ---- the Fishing cast's NAME, locale-safe ------------------------------------------------------------
+-- NEVER hardcode "/cast Fishing". On a non-English client the spell is localised (German "Angeln"), and a
+-- macro naming a spell that does not exist fails SILENTLY — no error, no cast, no chat line. That shipped,
+-- and it made the DEFAULT "Cast Fishing" slot a dead key for every non-English user on a fresh install:
+-- the secure click fired, PostClick ran, and nothing happened. Reported from a German 12.1.0 client.
+--
+-- Resolution order, most trustworthy first:
+--   1. the spellbook entry for 131474 — locale-correct AND proves this character actually HAS Fishing;
+--   2. C_Spell.GetSpellName(131474) — locale-correct, but names the spell even if you cannot cast it;
+--   3. "Fishing" — last resort, and only right on an English client.
+-- Cached once a REAL name resolves. Profession/spellbook data lands late after login, so a nil result must
+-- stay uncached and be retried on the next press rather than freezing the English fallback in place.
+-- SEEDS, not the truth. A hardcoded id is exactly as locale-brittle as a hardcoded name once Blizzard ships
+-- more than one id for the same ability: a German 12.1.0 client reports the fishing channel as
+-- spellID 131476, so a check written as `cid == 131474 or cname == "Fishing"` failed on BOTH halves and the
+-- entire channel became invisible to SBF — casts worked, catches landed, and every log/stat write was
+-- silently skipped. Seeds cover the common cases; the spellbook walk below adds whatever THIS character
+-- actually has, which is the only authoritative answer.
+local FISHING_SEED_IDS  = { [131474] = true, [131476] = true }   -- what we SHIPPED with
+local FISHING_SPELL_IDS = { [131474] = true, [131476] = true }   -- seeds + whatever this character has
+local JOURNAL_SPELL_ID  = 271990
+local fishingNameCache
+local function scanFishingSpellbook()
+  if not (GetProfessions and GetProfessionInfo and C_SpellBook and C_SpellBook.GetSpellBookItemInfo) then return end
+  local ok, _, _, _, fishingIdx = pcall(GetProfessions)
+  if not (ok and fishingIdx) then return end
+  local ok2, _, _, _, _, numSpells, spellOffset = pcall(GetProfessionInfo, fishingIdx)
+  if not (ok2 and numSpells and spellOffset) then return end
+  for i = 1, numSpells do
+    local info = C_SpellBook.GetSpellBookItemInfo(spellOffset + i, Enum.SpellBookSpellBank.Player)
+    local sid, nm = info and (info.spellID or info.actionID), info and info.name
+    -- everything at the Fishing profession's offset EXCEPT the Journal is a fishing CAST for this character
+    if sid and sid ~= JOURNAL_SPELL_ID then
+      FISHING_SPELL_IDS[sid] = true
+      if nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then fishingNameCache = nm end
+    end
+  end
+end
+ns.scanFishingSpellbook = scanFishingSpellbook
+
+local function fishingSpellName()
+  if fishingNameCache then return fishingNameCache end
+  scanFishingSpellbook()
+  if fishingNameCache then return fishingNameCache end
+  -- 2. straight id -> name lookup, over every known id (the seeds included)
+  local get = C_Spell and C_Spell.GetSpellName
+  if get then
+    for sid in pairs(FISHING_SPELL_IDS) do
+      local ok, nm = pcall(get, sid)
+      if ok and nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then
+        fishingNameCache = nm
+        return nm
+      end
+    end
+  end
+  -- 3. give up for THIS call, but do not cache — the data may simply not have loaded yet.
+  return "Fishing"
+end
+ns.fishingSpellName = fishingSpellName
+function SBF.FishingSpellName() return fishingSpellName() end
+
+-- THE one test for "is this channel the fishing cast". Four hand-written copies of
+-- `cid == 131474 or cname == "Fishing"` is what let a single wrong id take out logging, stats and the
+-- in-flight reload recovery all at once, on every non-English client. One helper, every caller.
+-- Accepts on ID (seeds + whatever this character's spellbook reports) OR on the LOCALE-RESOLVED name —
+-- never on a hardcoded English string.
+function SBF.IsFishingCast(cname, cid)
+  if cid and FISHING_SPELL_IDS[cid] then return true end
+  if cid and not fishingNameCache then                 -- unknown id: the spellbook may name it for us
+    scanFishingSpellbook()
+    if FISHING_SPELL_IDS[cid] then return true end
+  end
+  if cname and cname ~= "" and not (issecretvalue and issecretvalue(cname)) then
+    if cname == fishingSpellName() then return true end
+  end
+  return false
+end
+ns.IsFishingCast = SBF.IsFishingCast
+
+-- Does this character cast Fishing with an id we did NOT ship? That is the 131476 case, and it is worth
+-- reporting on ANY locale — the reporter's guess that it may be pole/account-history dependent means it can
+-- perfectly well turn up on an English client, where nothing else would reveal it.
+function SBF.UnknownFishingIds()
+  scanFishingSpellbook()
+  local out = {}
+  for sid in pairs(FISHING_SPELL_IDS) do
+    if not FISHING_SEED_IDS[sid] then out[#out + 1] = sid end
+  end
+  table.sort(out)
+  return out
+end
+
 local function buildPressMacro(acting)
   local def, label, slotKey, timed = SBF.ComputeNext(acting)
   local slotDef = slotKey and SLOT_DEF[slotKey]
@@ -1057,7 +1349,7 @@ local function buildPressMacro(acting)
     if (SBF.SlotDef("fishing") or {}).skip then
       fallback = ""                                   -- fishing off: no cast (combat block, if any, takes over)
     elseif fallback == "" then
-      fallback = "/cast Fishing"
+      fallback = "/cast " .. fishingSpellName()
     end
   end
   if slotKey == "fishing" and SBFDB.sitBeforeCast and fallback ~= "" then
@@ -1132,6 +1424,58 @@ local function postFire(slotDef, def, timed)
       local iid = curItemId(def)
       local rec = iid and SBF.ItemKnow(iid)
       if rec then rec.buffDuration = nil end
+      -- ...and deal with the buff IDENTITY, which is where a renamed buff wedges the slot permanently.
+      -- Two cases, and they need opposite handling because seedItemBuff has a strict precedence:
+      --
+      --  * CATALOGUED item — catalogKnow() wins outright and by design ("a catalogued item's buff identity
+      --    NEVER comes from the learned cache"), so clearing the learned record would achieve nothing: the
+      --    next pick re-seeds the same wrong value and the slot re-fires forever. The addon CANNOT
+      --    self-correct here. So don't pretend to — record the rejection and say plainly that the shipped
+      --    catalog is what has to change. (This is exactly the Midnight chum wedge: shipped buff
+      --    "Chum"/1237942 while the item really applies "Skillful Chum"/1303623, so neither the name lookup
+      --    nor GetBuffBySpell can ever match, effectLeft stays nil, and the slot is permanently due.)
+      --  * LEARNED-only item — clearing it DOES work, and the next successful cast re-learns from the live aura.
+      --
+      -- Either way the rejected value moves aside with a timestamp instead of being deleted: it is the
+      -- evidence that a fact is wrong on a live client, which is the observation the catalog feedback loop
+      -- wants, and losing it means re-discovering this by hand every patch.
+      local ck = iid and catalogKnow(iid)
+      if rec and (rec.buff or rec.buffSpell) then
+        rec.rejected = rec.rejected or {}
+        rec.rejected[#rec.rejected + 1] = { buff = rec.buff, buffSpell = rec.buffSpell, at = time(), tries = maxTries }
+      end
+      -- ONLY accuse the catalog of the value the slot was ACTUALLY watching. Gated on `ck.buff` alone, this
+      -- fired for any catalogued item whose typed, learned or stale buff missed three times, and named the
+      -- CATALOG value the engine never tried — in a blob the player pastes publicly. That sends the
+      -- maintainer hunting a catalog bug that does not exist, which is the exact dead end Report.lua was
+      -- written to end. Anything else falls through to buff-identity-wrong, which is the honest label.
+      local watched = def.buffSpell or def.buff
+      if ck and ck.buff and ck.buff ~= "" and (watched == ck.buffSpell or watched == ck.buff) then
+        -- DEV: arm a re-learn. seedItemBuff then steps the catalog aside for this item, the next cast learns
+        -- the REAL aura, and learnBuff promotes it to a devOverride (Core.lua) — so a dev client heals itself
+        -- and hands us the corrected identity. PUBLIC: IsDev() is false, nothing is armed, the catalog stays
+        -- absolute and this stays a loud but unfixable-until-release wedge. That asymmetry is deliberate: a
+        -- public client must never quietly outrank the shipped catalog.
+        if SBF.IsDev and SBF.IsDev() and SBF.ObserveItem and iid then
+          SBF.ObserveItem(iid, {})
+          local r2 = SBF.ItemKnow(iid)
+          if r2 and not r2.devOverride then r2.relearn = { buff = ck.buff, buffSpell = ck.buffSpell, at = time() } end
+        end
+        if SBF.Anomaly then
+          SBF.Anomaly("catalog-buff-wrong", "item %s: SHIPPED catalog buff \"%s\"(%s) never appeared after %d "
+            .. "applies (slot was watching %s). %s items-catalog.json still needs fixing.",
+            tostring(iid), tostring(ck.buff), tostring(ck.buffSpell or "?"), maxTries, tostring(watched or "nothing"),
+            (SBF.IsDev and SBF.IsDev()) and "DEV build: armed a re-learn, the next cast will self-correct."
+              or "The catalog outranks learned data, so this CANNOT self-correct - the slot keeps re-firing.")
+        end
+      elseif rec and (rec.buff or rec.buffSpell) then
+        if SBF.Anomaly then
+          SBF.Anomaly("buff-identity-wrong", "item %s: learned buff \"%s\"(%s) never appeared after %d applies - "
+            .. "dropping it so the next cast re-learns from the live aura.", tostring(iid),
+            tostring(rec.buff or "?"), tostring(rec.buffSpell or "?"), maxTries)
+        end
+        rec.buff, rec.buffSpell = nil, nil
+      end
       if ns.NotifyApplyFail then ns.NotifyApplyFail(slotDef, def, maxTries) end
     end
   end

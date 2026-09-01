@@ -3,12 +3,16 @@
 ## Notes: One key runs the whole fishing loop. Keybound item/macro slots (food, drink, lure, boat, cast, interact), built for combo keys (modifier combos supported).
 ## Category: GEC
 ## Author: Goblin Engineering Company
-## Version: 2026.08.17.2
+## Version: 2026.09.01.1
 ## X-GEC-Channel: public
 ## X-WoWI-ID: 27173
 ## X-Curse-Project-ID: 1625876
 ## SavedVariables: SBFDB, SBFData, GECStoreDB
 ## X-Category: Misc
+## IconTexture: Interface\Icons\Trade_Fishing
+## AddonCompartmentFunc: SBF_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: SBF_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: SBF_OnAddonCompartmentLeave
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
@@ -37,5 +41,6 @@ Feed.lua
 Help.lua
 OptionsWidgets.lua
 Options.lua
+Report.lua
 Welcome.lua
 Uplink.lua

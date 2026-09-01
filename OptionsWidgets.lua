@@ -450,8 +450,14 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
         if not seen[it.id] then
           local show, owned = pickShow(it.id, it.source)
           if show then
-            out[#out + 1] = { id = it.id, owned = owned, learned = it.learned,
-              zoneOk = it.zoneOk, maps = it.maps, allZones = it.allZones }; seen[it.id] = true
+            -- COPY the row, do not re-type its fields. The hand-listed version silently dropped `hidden`,
+            -- which killed the dim, the restore tooltip and the shift+left un-hide — the entire restore half
+            -- of the feature — with no error, while three shipped strings promised it was reversible.
+            -- Copying means a field added to OwnedCatalog can never be lost here again.
+            local row = {}
+            for k2, v2 in pairs(it) do row[k2] = v2 end
+            row.owned = owned                            -- pickShow's verdict wins over the raw ownership flag
+            out[#out + 1] = row; seen[it.id] = true
           end
         end
       end
@@ -484,7 +490,26 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
     local items = SBF.OutputDB and SBF.OutputDB("items")
     local rec = items and items[id]
     if rec and rec.slots and catSlot then rec.slots[catSlot] = nil end   -- un-tag this slot (account-wide)
+    if ns.HideItem and catSlot then ns.HideItem(id, catSlot, true) end   -- and suppress it from the flyout
     markDirty(); render()
+  end
+
+  -- Shipped-catalog items forget through the SAME path, but they get a confirmation first: the catalog is
+  -- real game data we fed in, so "you're about to overrule our data" deserves a beat — whereas an item YOU
+  -- dropped in is yours to drop out again with no ceremony. Both end at forgetItem, so there is one hide
+  -- mechanism and one way back (Settings → Item pickers → "Show hidden items", then shift+left to restore).
+  StaticPopupDialogs["SBF_FORGET_CATALOG_ITEM"] = StaticPopupDialogs["SBF_FORGET_CATALOG_ITEM"] or {
+    text = "Hide |cffffd100%s|r from this slot?\n\n|cff909090This one came from SBF's shipped item list, not from you. "
+        .. "Hiding it is per-slot and reversible: turn on \"Show hidden items\" in Settings, then shift+left-click "
+        .. "it to bring it back.|r",
+    button1 = YES, button2 = NO, timeout = 0, whileDead = true, hideOnEscape = true,
+    OnAccept = function(self) if self.data then self.data() end end,
+  }
+  local function forgetWithConfirm(id, learned)
+    if learned then forgetItem(id); return end                -- yours: no ceremony
+    local nm = (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(tonumber(id) or 0)) or tostring(id)
+    local dlg = StaticPopup_Show("SBF_FORGET_CATALOG_ITEM", nm)
+    if dlg then dlg.data = function() forgetItem(id) end else forgetItem(id) end
   end
 
   render = function()
@@ -505,7 +530,10 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
       b.icon:Show(); b.icon:SetTexture(slotIcon(id)); b.icon:SetDesaturated(not owned)
       b:SetAlpha(owned and 1 or 0.4); b.hl:SetShown(active)
       paintSlot(b, active)   -- SELECTED = accent frame + warm fill; else flat slot look (palette-sourced)
-      b.id, b.owned = id, owned
+      b.id, b.owned, b.hidden = id, owned, e.hidden
+      -- a hidden item only appears while "Show hidden items" is on: show it dimmed + desaturated so it
+      -- reads as suppressed rather than merely unowned, and the tooltip says how to bring it back.
+      if e.hidden then b:SetAlpha(0.3); b.icon:SetDesaturated(true) end
       local sid = ns.spellEntry and ns.spellEntry(id)
       if sid then
         b.learned, b.zoneOk, b.maps, b.allZones = nil, true, nil, nil   -- spells aren't zone-bound
@@ -540,6 +568,11 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
           GameTooltip:AddLine("You don't own this", 0.6, 0.6, 0.6)
         end
         GameTooltip:AddLine(inItems(def, self.id) and "right-click: remove" or "left-click: add", 0.7, 0.7, 0.7)
+        if self.hidden then GameTooltip:AddLine("Hidden - shift+left-click: restore", 1, 0.82, 0)
+        else GameTooltip:AddLine("shift+left-click: hide from this slot", 0.7, 0.7, 0.7) end
+        if SBF.ItemUsable and not SBF.ItemUsable(self.id) then
+          GameTooltip:AddLine("No use effect - this item can't be thrown/used at all", 1, 0.35, 0.35)
+        end
         if self.buffName then GameTooltip:AddLine("Buff: " .. self.buffName, 0.3, 1, 0.3)
         else GameTooltip:AddLine("Buff: not learned yet (cast it once)", 0.6, 0.6, 0.45) end
         if self.learned then
@@ -575,8 +608,13 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
           markDirty()       -- item removed -> unsaved edit
           render(); return
         end
-        if IsShiftKeyDown() and self.learned then        -- shift+left: FORGET a dropped-in item from this slot
-          forgetItem(self.id); return
+        if IsShiftKeyDown() then                         -- shift+left: HIDE this item from the slot...
+          if self.hidden then                            -- ...or RESTORE it, when "Show hidden items" is on
+            if ns.HideItem and catSlot then ns.HideItem(self.id, catSlot, false) end
+            markDirty(); render(); return
+          end
+          forgetWithConfirm(self.id, self.learned)       -- catalog items confirm first; dropped-in ones don't
+          return
         end
         if not expanded then expanded = true; render(); return end   -- collapsed: any click expands
         if isHandle then expanded = false; render(); return end       -- expanded: first icon collapses
@@ -965,6 +1003,13 @@ ns.MakeMouseButton = MakeMouseButton   -- exposed so the Welcome panel reuses th
 -- tab now, not here. `paint` repaints the row name's active color. The popup reads its CURRENT target from
 -- p._def/p._paint/p._slotId (set each open) so every handler tracks whatever slot it's pointed at.
 local cfgPopup
+-- The config popup caches p._def when it opens, and the working copy can be replaced underneath it
+-- (LoadWorking deepcopies a fresh slots table on load/Revert/auto-swap). Resolve by the slot ID it also
+-- stored, through the engine's own getter, so a write can never land in an orphaned table.
+local function liveDef(p)
+  return (p._slotId and SBF.SlotDef and SBF.SlotDef(p._slotId)) or p._def
+end
+
 local function buildCfgPopup()
   local p = CreateFrame("Frame", "SBFSlotCfg", ns.opt.panel, "BackdropTemplate")
   local PAD = (Theme.metrics and Theme.metrics.pad) or 14   -- theme content inset: same padding L and R
@@ -1044,9 +1089,10 @@ local function buildCfgPopup()
     dir = "column", pad = PAD, gap = "row",
     -- Active/inactive (mirrors clicking the name on the row); get/set read the CURRENT target each click.
     { check = { label = "Active",
-        get = function() return not (p._def and p._def.skip) end,
+        -- live-resolved, never the cached p._def: same detached-table trap as the row label (see MakeRow's D()).
+        get = function() local d = liveDef(p); return not (d and d.skip) end,
         set = function(v)
-          local def = p._def; if not def then return end
+          local def = liveDef(p); if not def then return end
           def.skip = (not v) and true or nil
           markDirty(def)        -- active/inactive toggle -> unsaved edit (skipped for char-slots)
           if p._paint then p._paint() end
@@ -1171,7 +1217,7 @@ local function buildCfgPopup()
     self._acc = (self._acc or 0) + e
     if self._acc < 0.4 then return end
     self._acc = 0
-    if p.active and p._def then p.active:SetChecked(not p._def.skip) end
+    do local d = liveDef(p); if p.active and d then p.active:SetChecked(not d.skip) end end
     for _, row in ipairs(p.buffRows) do
       if row:IsShown() and row.id and row.eb:IsEnabled() and not row.eb:HasFocus() then
         local learned = (SBF.ItemKnow and SBF.ItemKnow(row.id) and SBF.ItemKnow(row.id).buff) or ""
@@ -1240,19 +1286,36 @@ local function MakeRow(parent, y, def, labelText, src, reflow)
   lblBtn:SetPoint("TOPLEFT", 8, -8); lblBtn:SetSize(104, 22)
   local lbl = lblBtn:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
   lbl:SetPoint("LEFT"); lbl:SetWidth(104); lbl:SetJustifyH("LEFT"); lbl:SetText(labelText)
-  local function paint() local c = def.skip and 0.45 or 1; lbl:SetTextColor(c, c, c) end
+  -- NEVER write through the captured `def`. This row closes over the slot table that existed when the
+  -- Buttons tab was BUILT, but the working copy is REPLACED wholesale (LoadWorking does
+  -- slots = deepcopy(p.slots)) on profile load, Revert, and auto-swap — and auto-swap runs from inside the
+  -- fishing PreClick, so it can happen mid-play with no user action. After that, the captured table is an
+  -- orphan: toggling a slot off wrote skip=true into a table nothing reads, the label greyed out (paint
+  -- reads the same dead table, so the UI agreed with itself), and the engine kept firing the slot. That is
+  -- the "chum1 is OFF and still throwing, then fixed itself" bug — reopening the tab re-captured a live ref.
+  -- D() resolves the slot by ID every time, through the same getter the engine uses.
+  local function D() return (src and src.id and SBF.SlotDef and SBF.SlotDef(src.id)) or def end
+  local function paint() local d = D(); local c = d.skip and 0.45 or 1; lbl:SetTextColor(c, c, c) end
   paint()
   lblBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
   lblBtn:SetScript("OnClick", function(self, button)
+    local d = D()
     if button == "RightButton" then        -- right-click opens this slot's config popup
-      ShowSlotConfig(def, src, self, paint); return
+      ShowSlotConfig(d, src, self, paint); return
     end
-    def.skip = (not def.skip) and true or nil; paint()
-    markDirty(def)        -- active/inactive toggle -> unsaved edit (skipped for char-slots)
+    -- the assertion that keeps this honest: if the live table isn't the one we closed over, we just caught
+    -- a stale reference in the act. Report it rather than silently getting it right.
+    if d ~= def and SBF.Anomaly then
+      SBF.Anomaly("stale-slot-ref", "slot '%s': the Options row held a DETACHED slot table (working copy was "
+        .. "rebuilt since this tab was drawn). Wrote through the live one instead.", tostring(src and src.id))
+    end
+    d.skip = (not d.skip) and true or nil; paint()
+    markDirty(d)          -- active/inactive toggle -> unsaved edit (skipped for char-slots)
     if SBF.Apply then SBF.Apply() end
   end)
   lblBtn:SetScript("OnEnter", function(self)
-    showTip(self, def.skip and "Inactive - left-click to activate" or "Active - left-click to deactivate",
+    local d = D()
+    showTip(self, d.skip and "Inactive - left-click to activate" or "Active - left-click to deactivate",
       "right-click: configure (active / key)")
   end)
   lblBtn:SetScript("OnLeave", GameTooltip_Hide)

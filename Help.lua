@@ -84,6 +84,12 @@ SBF.Help = {
   ["set.showWarbandItems"] = { title = "Show Warband items",
     body = "Show account-wide collectibles you OWN (toys, account boats) as available options in the slot pickers - on by default. Turn this off (and the \"show I don't own\" toggles) to hide everything you haven't explicitly set, so only items you drag into a slot are used. Useful when you want a character to start from scratch." },
 
+  ["set.showHiddenItems"] = { title = "Show hidden items",
+    body = "Shift+left-click any item in a picker to hide it from that slot - useful when Blizzard strips an item's effect, or you just never want it offered. Turn this on to bring hidden items back into view (dimmed); shift+left-click one again to restore it. Hiding is per slot and account-wide, and items from SBF's shipped list ask for confirmation first." },
+
+  ["set.hideMinimap"] = { title = "Hide the minimap button",
+    body = "Take SBF's button off the minimap ring. You can still open the window with /sbf, or from the AddOns button on the minimap - right-clicking SBF there puts the button back. Your button's position is remembered either way." },
+
   -- ===== Settings: Audio =====
   ["set.castSound"] = { title = "Fishing-start sound",
     body = "Play a sound when a cast goes out. Pick the sound from the dropdown; Test previews it." },
