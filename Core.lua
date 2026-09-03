@@ -672,6 +672,12 @@ end
 
 -- pull the perception value out of a structured tooltip (C_TooltipInfo) — a leftText may hold several
 -- \n-joined sub-lines, so we take the number from the sub-line that actually says "perception".
+-- The label is matched via the client's OWN stat global (ITEM_MOD_PERCEPTION_SHORT = "Perception" on enUS):
+-- the hardcoded English word returned 0 on every other locale — display-only, but Feed.lua fed that zero
+-- straight into Haul's bar. English stays as the fallback if the global ever vanishes. plain find (no
+-- patterns): a translated label may legally contain Lua pattern magic.
+local PERCEPTION_LABEL = (type(ITEM_MOD_PERCEPTION_SHORT) == "string" and ITEM_MOD_PERCEPTION_SHORT ~= ""
+  and ITEM_MOD_PERCEPTION_SHORT:lower()) or "perception"
 local function scanPerception(data)
   if not (data and data.lines) then return nil, 0 end
   local txt, val = nil, 0
@@ -681,7 +687,7 @@ local function scanPerception(data)
     -- (errors on index/concat, esp. in combat). Skip those lines — we can't read them anyway.
     if t and not (issecretvalue and issecretvalue(t)) then
       for sub in (t .. "\n"):gmatch("(.-)\n") do
-        if sub:lower():find("perception") then
+        if sub:lower():find(PERCEPTION_LABEL, 1, true) then
           local digits = ((sub:match("([%d,]+)") or ""):gsub(",", ""))   -- (gsub returns str,count)
           local n = tonumber(digits)
           txt = (txt and (txt .. " | ") or "") .. sub
@@ -1227,9 +1233,9 @@ end
 --     cannot prove. We only ever downgrade a cast on evidence.
 -- The mouse path doesn't need any of this: mouseOnDown knows the moment it arms the interact binding, and sets
 -- the flag directly (SBF._chanReeled).
-local reelWatchKeys, reelEdgeReady = nil, false
+local reelWatchKeys, reelEdgeReady, reelSawKeys = nil, false, false
 local function resetReelWatch()
-  reelWatchKeys, reelEdgeReady = nil, false
+  reelWatchKeys, reelEdgeReady, reelSawKeys = nil, false, false
   SBF._chanReeled = false           -- false = "no reel seen yet"; nil = "couldn't tell"; true = reeled
   SBF._reelBlindWhy = nil           -- and WHY it couldn't tell, set at the moment of blinding
   -- NOTE: the chest veto is deliberately NOT reset here. It is keyed on the owning cast's start time
@@ -1263,12 +1269,15 @@ local function reelWatchTick()      -- per FRAME while channeling
     return
   end
   if #reelWatchKeys == 0 then
-    -- reelWatchRefresh built nothing. The fishing key is only watched while a jump/interact override is
-    -- live (cur ~= "JUMP"), and the interact keys come from the game binding — so "no keys" usually means
-    -- the override wasn't active on this tick or nothing is bound to interact, NOT that a key is unreadable.
-    SBF._chanReeled, SBF._reelBlindWhy = nil, "no keys to watch this tick (interact override not live, or nothing bound to interact)"
+    -- reelWatchRefresh built nothing THIS tick. The fishing key is only watched while a jump/interact
+    -- override is live (cur ~= "JUMP"), and that override flips per poll — so an empty list here is a
+    -- MOMENTARY state, not a verdict. Latching nil here was a one-way door: the tick's own entry guard
+    -- requires _chanReeled == false, so one empty tick blinded the whole cast even when reelWatchRefresh
+    -- rebuilt a perfectly good list a tick later. Skip the tick; the CHANNEL_STOP freeze downgrades to
+    -- nil only if the list stayed empty for the ENTIRE channel (reelSawKeys never set).
     return
   end
+  reelSawKeys = true                                                -- the gate had eyes at least once this cast
   local anyDown = false
   for _, k in ipairs(reelWatchKeys) do
     local base = (type(k) == "string" and k:match("[^-]+$")) or k   -- SHIFT-F -> F (IsKeyDown wants the base key)
@@ -1326,7 +1335,17 @@ end)
 -- returns "wait" while backed off). NOTE: the numeric error TYPE (57) is SHARED with other
 -- "can't do that" messages (e.g. "Can't do that while moving"), so we match the SPECIFIC WORDING
 -- of the cast-failure, not the type. Add other real cast-fail phrasings to CAST_FAIL_TEXT.
-local CAST_FAIL_TEXT = { "fishable water", "too shallow" }   -- lowercase substrings of genuine cast-failure messages
+-- Locale-correct via the GlobalStrings (the exact pattern the LoS entry below already proved): the two
+-- fishing failures have their own globals, so match the CLIENT'S OWN text for them. Hardcoded enUS
+-- substrings meant this whole detector was dead off enUS — no back-off, no fail sound, and no `castfail`
+-- row ever written, so the Log tab and the permanent Stats rollup silently omitted an entire outcome
+-- class for non-English users. The enUS substrings stay as FALLBACKS only, for a client where a global
+-- is nil/renamed — they can never make detection worse, only catch what the globals miss.
+local NOWATER_MSG = SPELL_FAILED_NOT_FISHABLE and tostring(SPELL_FAILED_NOT_FISHABLE):lower() or nil
+local SHALLOW_MSG = SPELL_FAILED_TOO_SHALLOW and tostring(SPELL_FAILED_TOO_SHALLOW):lower() or nil
+local CAST_FAIL_TEXT = { "fishable water", "too shallow" }   -- enUS fallbacks (see above); globals appended below
+if NOWATER_MSG and NOWATER_MSG ~= "" then CAST_FAIL_TEXT[#CAST_FAIL_TEXT + 1] = NOWATER_MSG end
+if SHALLOW_MSG and SHALLOW_MSG ~= "" then CAST_FAIL_TEXT[#CAST_FAIL_TEXT + 1] = SHALLOW_MSG end
 -- Line-of-sight: casting at a water spot behind an obstacle fires "Target not in line of sight" (locale-correct
 -- via the global). It's a genuine cast-fail — back off + log it, not the loop hammering a blocked spot.
 local LOS_MSG = SPELL_FAILED_LINE_OF_SIGHT and tostring(SPELL_FAILED_LINE_OF_SIGHT):lower() or nil
@@ -1342,7 +1361,9 @@ end
 local function castFailCause(msg)
   msg = tostring(msg or ""):lower()
   if LOS_MSG and LOS_MSG ~= "" and msg:find(LOS_MSG, 1, true) then return "los" end
-  if msg:find("fishable water", 1, true) then return "nowater" end
+  if NOWATER_MSG and NOWATER_MSG ~= "" and msg:find(NOWATER_MSG, 1, true) then return "nowater" end
+  if SHALLOW_MSG and SHALLOW_MSG ~= "" and msg:find(SHALLOW_MSG, 1, true) then return "shallow" end
+  if msg:find("fishable water", 1, true) then return "nowater" end   -- enUS fallbacks
   if msg:find("too shallow", 1, true) then return "shallow" end
   return nil
 end
@@ -1845,6 +1866,12 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
       -- is a state the current code cannot produce. Name it rather than printing "unknown", which reads like
       -- a shrug and cost a round trip: if this string ever appears, there is a fourth blinding path to find.
       local reeledWhy = SBF._reelBlindWhy or "NOT RECORDED - no known code path does this; report the build"
+      -- The empty-watch-list downgrade, moved here from the tick: a per-tick empty list is momentary (the
+      -- override flips per poll), but a list that stayed empty for the WHOLE channel means the gate never
+      -- had eyes, and `false` ("provably no reel") would be a lie. reelSawKeys is per-cast (resetReelWatch).
+      if reeled == false and not reelSawKeys then
+        reeled, reeledWhy = nil, "no keys to watch for the entire channel (interact override never live, or nothing bound to interact)"
+      end
       C_Timer.After(0.8, function()        -- grace: a catch's loot / the 413 can land just after the stop
         local combat = (UnitAffectingCombat and UnitAffectingCombat("player")) or false
         -- caught = a source-confirmed FISHING loot window this cast produced items. The PRIMARY signal is the

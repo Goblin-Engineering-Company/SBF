@@ -269,10 +269,23 @@ end
 -- unselected vanish. The LAST cell is the "R" random toggle, icon-styled and butted against
 -- the list. The strip IS both the picker and the display. Returns the row height.
 local STRIP_X = 120
-local function buildCatalogSlot(r, def, slotKey, reflow)
-  def.items = def.items or {}
-  if #def.items == 0 and def.item then                 -- migrate a legacy single item in
-    local id = GetItemInfoInstant(def.item); if id then def.items[1] = id end
+local function buildCatalogSlot(r, def0, slotKey, reflow)
+  def0.items = def0.items or {}
+  if #def0.items == 0 and def0.item then               -- migrate a legacy single item in
+    local id = GetItemInfoInstant(def0.item); if id then def0.items[1] = id end
+  end
+  -- NEVER write through the captured `def` after build time. LoadWorking REPLACES working.slots wholesale
+  -- (profile load, Revert, auto-swap — and auto-swap runs from inside the fishing PreClick, so it happens
+  -- mid-play with no user action), after which the table this strip closed over is an orphan: the tray
+  -- renders and edits a table the engine never reads, and SaveWorking deepcopies the live one, so the edit
+  -- is gone after /reload. Same defect class as the MakeRow name-toggle; same cure: D() resolves the slot's
+  -- LIVE config table by id, through the engine's own getter, on every access. Every closure below that can
+  -- run after build re-fetches via D(); the build-time `def` survives only as the fallback. D() re-asserts
+  -- the `.items` invariant the init above establishes, since a freshly loaded working copy may lack it.
+  local function D()
+    local d = (SBF.SlotDef and SBF.SlotDef(slotKey)) or def0
+    d.items = d.items or {}
+    return d
   end
   local catSlot = CATALOG_SLOT[slotKey]
   local slotDef = ns.SlotDef and ns.SlotDef(slotKey)   -- descriptor: gates random + the repeat field
@@ -293,6 +306,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
       entry, learnId = id, id
     end
     if entry then
+      local def = D()   -- live slot table, not the build-time capture
       addItem(def, entry); syncDefItem(def); render(); ClearCursor()
       markDirty()           -- item/spell added -> unsaved edit
       if learnId and ns.LearnItem then ns.LearnItem(learnId, catSlot) end   -- only real items grow the catalog
@@ -320,13 +334,14 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
     -- the drag (that cancels it), and no cursor item, so it won't conflict with bag drops.
     b:RegisterForDrag("LeftButton")
     b:SetScript("OnDragStart", function(self)
-      if not inItems(def, self.id) then return end
+      if not inItems(D(), self.id) then return end
       dragFrom = self.id; self.icon:SetAlpha(0.3)
       local g = ensureGhost(); g.tex:SetTexture(self.icon:GetTexture()); g:Show()
     end)
     b:SetScript("OnDragStop", function(self)
       self.icon:SetAlpha(1); if dragGhost then dragGhost:Hide() end
       if not dragFrom then return end
+      local def = D()   -- live slot table, not the build-time capture
       local cx = GetCursorPosition()
       for _, c in ipairs(cells) do
         if c:IsShown() and c.id and c ~= self and inItems(def, c.id) and c:IsMouseOver() then
@@ -375,7 +390,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
     if m == "random"  then return { 0.45, 0.85, 0.45,  0.05, 0.14, 0.05,  0.55, 1.00, 0.55 } end
     return                     { 0.40, 0.72, 0.95,  0.04, 0.10, 0.16,  0.55, 0.80, 1.00 }   -- cycle
   end
-  local function curMode() return (ns.SlotMode and slotDef and ns.SlotMode(slotDef, def)) or def.mode or "cycle" end
+  local function curMode() local def = D() return (ns.SlotMode and slotDef and ns.SlotMode(slotDef, def)) or def.mode or "cycle" end
   local function nextMode(m)
     if m == "cycle" then return "deplete" end
     if m == "deplete" then return (slotDef and slotDef.allowsRandom) and "random" or "cycle" end
@@ -393,7 +408,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
     rbtn.txt:SetTextColor(c[7], c[8], c[9]); rbtn.txt:SetText(MODE_GLYPH[m] or "C")
     rbtn.hl:Show()
   end
-  rbtn:SetScript("OnClick", function() def.mode = nextMode(curMode()); markDirty(); render() end)
+  rbtn:SetScript("OnClick", function() D().mode = nextMode(curMode()); markDirty(); render() end)
   rbtn:SetScript("OnEnter", function(self)
     showTip(self, "Firing mode", (MODE_TIP[curMode()] or "") .. "\n\nClick to change mode.")
   end)
@@ -442,11 +457,27 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
     return showUnowned(source), false                                               -- unowned → grayed if toggle on
   end
   local function entries()                              -- {id, owned}; collapsed = selected only
+    local def = D()
     local out, seen = {}, {}
+    -- ONE OwnedCatalog fetch feeds BOTH halves. The selected loop used to hand-type { id, owned }, which
+    -- starved every CONFIGURED item of learned/zoneOk/maps/allZones/hidden — and since it also set seen[id],
+    -- the copying loop below could never re-emit them. The orange out-of-zone tint, the zone tooltip block
+    -- and shift+right were unreachable for exactly the items being fished with, and the collapsed strip
+    -- (selected only) is where zone learning matters most. Same lesson as the second loop: COPY the row,
+    -- never re-type its fields.
+    local catList = (ns.OwnedCatalog and ns.OwnedCatalog(catSlot)) or {}
+    local catById = {}
+    for _, it in ipairs(catList) do catById[it.id] = it end
     -- selected items ALWAYS show (even if you no longer own them — grayed out as a reminder)
-    for _, id in ipairs(def.items) do out[#out + 1] = { id = id, owned = ownedOf(id) }; seen[id] = true end
+    for _, id in ipairs(def.items) do
+      local row = {}
+      local it = catById[id]
+      if it then for k2, v2 in pairs(it) do row[k2] = v2 end end
+      row.id, row.owned = id, ownedOf(id)               -- selected: shown regardless, ownedOf paints the gray
+      out[#out + 1] = row; seen[id] = true
+    end
     if expanded then                                    -- expanded adds the rest of the catalog
-      for _, it in ipairs((ns.OwnedCatalog and ns.OwnedCatalog(catSlot)) or {}) do
+      for _, it in ipairs(catList) do
         if not seen[it.id] then
           local show, owned = pickShow(it.id, it.source)
           if show then
@@ -480,17 +511,17 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
     return out
   end
 
-  -- FORGET a learned (dropped-in) item: drop it from this profile's run-it-out list AND un-remember it
-  -- as a candidate for THIS slot in the account-wide item DB (clear its slots[catSlot] tag), so a wrong-slot
-  -- drop stops haunting the strip. Every slot (Buffs included now) is a real per-slot tag, so this no longer
-  -- needs the old "_all = delete the whole record" special case. Only called for self.learned items.
+  -- HIDE an item from this slot (shift+left). This used to ALSO clear the learned slots[catSlot] tag — but
+  -- OwnedCatalog's learned merge GATES on that tag, so for a learned-only entry (100% of the Buffs picker,
+  -- whose slot has no shipped catalog list) deleting it removed the very thing that lets "Show hidden items"
+  -- surface the item again: the hide was irreversible while three shipped strings promised otherwise. Now it
+  -- drops the item from this profile's run-it-out list and sets the per-slot hidden flag, nothing else — one
+  -- mechanism, one way back (Settings → Item pickers → "Show hidden items", then shift+left to restore).
   local function forgetItem(id)
+    local def = D()   -- live slot table, not the build-time capture
     id = tonumber(id) or id
     removeItem(def, id); syncDefItem(def)
-    local items = SBF.OutputDB and SBF.OutputDB("items")
-    local rec = items and items[id]
-    if rec and rec.slots and catSlot then rec.slots[catSlot] = nil end   -- un-tag this slot (account-wide)
-    if ns.HideItem and catSlot then ns.HideItem(id, catSlot, true) end   -- and suppress it from the flyout
+    if ns.HideItem and catSlot then ns.HideItem(id, catSlot, true) end   -- suppress from the flyout (reversible)
     markDirty(); render()
   end
 
@@ -513,6 +544,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
   end
 
   render = function()
+    local def = D()   -- live slot table, not the build-time capture
     layoutCols = colsFor()                               -- re-wrap to the current scroll width
     for _, b in ipairs(cells) do b:Hide() end
     rbtn:Hide(); ehandle:Hide()
@@ -553,10 +585,11 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
       local count = (not sid) and GetItemCount and GetItemCount(id) or 0
       if count and count > 0 then b.countFS:SetText(count); b.countFS:Show() else b.countFS:Hide() end
       b:SetScript("OnEnter", function(self)
+        local d = D()     -- live slot table (the handler can outlive the working copy this render saw)
         local sid2 = ns.spellEntry and ns.spellEntry(self.id)
         if sid2 then
           GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetSpellByID(sid2)
-          GameTooltip:AddLine(inItems(def, self.id) and "right-click: remove" or "left-click: add", 0.7, 0.7, 0.7)
+          GameTooltip:AddLine(inItems(d, self.id) and "right-click: remove" or "left-click: add", 0.7, 0.7, 0.7)
           if not (IsSpellKnown and IsSpellKnown(sid2)) then GameTooltip:AddLine("You don't know this spell", 0.8, 0.5, 0.5) end
           GameTooltip:Show(); return
         end
@@ -567,7 +600,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
         else
           GameTooltip:AddLine("You don't own this", 0.6, 0.6, 0.6)
         end
-        GameTooltip:AddLine(inItems(def, self.id) and "right-click: remove" or "left-click: add", 0.7, 0.7, 0.7)
+        GameTooltip:AddLine(inItems(d, self.id) and "right-click: remove" or "left-click: add", 0.7, 0.7, 0.7)
         if self.hidden then GameTooltip:AddLine("Hidden - shift+left-click: restore", 1, 0.82, 0)
         else GameTooltip:AddLine("shift+left-click: hide from this slot", 0.7, 0.7, 0.7) end
         if SBF.ItemUsable and not SBF.ItemUsable(self.id) then
@@ -583,12 +616,14 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
             GameTooltip:AddLine("Used in: " .. table.concat(zs, ", "), 0.6, 0.8, 1, true)
             if not self.zoneOk then GameTooltip:AddLine("|cffffaa00!|r not confirmed in THIS zone - may not work here") end
           end
-          GameTooltip:AddLine("shift-click: forget (un-learn from this slot)", 1, 0.5, 0.5)
+          -- (no separate "forget" line: shift+left = hide, and the hide/restore line above already says so —
+          -- two verbs on one gesture sent users hunting for a second action that doesn't exist)
           GameTooltip:AddLine("shift-right-click: toggle works-in-all-zones", 0.5, 0.5, 0.5)
         end
         GameTooltip:Show()
       end)
       b:SetScript("OnClick", function(self, button)
+        local d = D()     -- live slot table (the handler can outlive the working copy this render saw)
         local ck = GetCursorInfo()
         if ck == "item" or ck == "toy" then receiveDrop(); return end  -- held item dropped on a cell -> add
         if IsShiftKeyDown() and button == "RightButton" then           -- shift+right: works-in-all-zones (learned only)
@@ -604,7 +639,7 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
           if ns.LearnItem and not (ns.spellEntry and ns.spellEntry(self.id)) then
             ns.LearnItem(self.id, catSlot)              -- memorized as a candidate, so it stays in the expanded flyout
           end                                           -- (never truly vanishes); only shift-click forgets it
-          removeItem(def, self.id); syncDefItem(def)
+          removeItem(d, self.id); syncDefItem(d)
           markDirty()       -- item removed -> unsaved edit
           render(); return
         end
@@ -618,8 +653,8 @@ local function buildCatalogSlot(r, def, slotKey, reflow)
         end
         if not expanded then expanded = true; render(); return end   -- collapsed: any click expands
         if isHandle then expanded = false; render(); return end       -- expanded: first icon collapses
-        if not inItems(def, self.id) then                             -- add (owned or not — firing skips a missing one)
-          addItem(def, self.id); syncDefItem(def)
+        if not inItems(d, self.id) then                               -- add (owned or not — firing skips a missing one)
+          addItem(d, self.id); syncDefItem(d)
           markDirty()                    -- item added -> unsaved edit
         end
         render()
@@ -669,9 +704,13 @@ ns.buildCatalogSlot = buildCatalogSlot
 -- an item-slot square (indented "drop here" look even when empty), built by hand
 -- since ItemButtonTemplate isn't inheritable here. Drag item/spell/macro/toy on;
 -- right-click clears.
-local function MakeItemButton(parent, x, y, def, onChange, slotId)
+local function MakeItemButton(parent, x, y, def0, onChange, slotId)
   local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
   b.slotId = slotId                                        -- lets UpdateItemIcon render a dim default for fishing/combat
+  -- Same stale-table hazard as the catalog strip: the button outlives the working copy (LoadWorking replaces
+  -- working.slots on load/Revert/auto-swap), so resolve the LIVE config by slot id per access when one is
+  -- known; the captured `def0` is the fallback for callers without an id (e.g. the Welcome panel's demo slot).
+  local function D() return (slotId and SBF.SlotDef and SBF.SlotDef(slotId)) or def0 end
   b:SetSize(ICON, ICON); b:SetPoint("TOPLEFT", x, y)        -- match the catalog icon cells (37px, same flat frame)
   b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
   b:RegisterForDrag("LeftButton")
@@ -679,18 +718,20 @@ local function MakeItemButton(parent, x, y, def, onChange, slotId)
   b.icon = b:CreateTexture(nil, "ARTWORK"); b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
   b.icon:SetPoint("TOPLEFT", 2, -2); b.icon:SetPoint("BOTTOMRIGHT", -2, 2)
   b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")   -- square, matches the square border
-  b:SetScript("OnReceiveDrag", function() ns.PlaceCursor(def, b, onChange) end)
+  b:SetScript("OnReceiveDrag", function() ns.PlaceCursor(D(), b, onChange) end)
   b:SetScript("OnClick", function(self, click)
+    local d = D()   -- live slot table, not the build-time capture
     if click == "RightButton" then
-      def.items = nil   -- also clear the multi-select model
-      ClearDef(def); ns.UpdateItemIcon(b, def)
-      markDirty(def)        -- action slot cleared -> unsaved edit (skipped for char-slots)
+      d.items = nil   -- also clear the multi-select model
+      ClearDef(d); ns.UpdateItemIcon(b, d)
+      markDirty(d)        -- action slot cleared -> unsaved edit (skipped for char-slots)
       if onChange then onChange() end; if SBF.Apply then SBF.Apply() end
     else
-      ns.PlaceCursor(def, b, onChange)
+      ns.PlaceCursor(d, b, onChange)
     end
   end)
   b:SetScript("OnEnter", function(self)
+    local def = D()   -- live slot table (tooltip reads track the current working copy)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     if self._isDefault and self.slotId == "fishing" then        -- dim fishing-icon default
       GameTooltip:SetText("Cast Fishing - default", accentRGB())
@@ -709,7 +750,7 @@ local function MakeItemButton(parent, x, y, def, onChange, slotId)
     GameTooltip:Show()
   end)
   b:SetScript("OnLeave", GameTooltip_Hide)
-  ns.UpdateItemIcon(b, def)
+  ns.UpdateItemIcon(b, def0)
   return b
 end
 ns.MakeItemButton = MakeItemButton   -- exposed so the Welcome panel reuses the real action-slot widget
@@ -1344,10 +1385,11 @@ local function MakeRow(parent, y, def, labelText, src, reflow)
     bf:SetText((SBF.WatchedBuff and SBF.WatchedBuff(key)) or def.buff or "")
     bf:SetScript("OnTextChanged", function(self, user)
       if user then
+        local d = D()       -- live slot table, not the build-time capture
         local t = self:GetText()
-        def.buff = (t ~= "" and t) or nil
-        def.buffSpell = nil                 -- typed name: spellId unknown -> track by name (re-learns on next cast)
-        if t == "" then def.buffFor = nil end
+        d.buff = (t ~= "" and t) or nil
+        d.buffSpell = nil                 -- typed name: spellId unknown -> track by name (re-learns on next cast)
+        if t == "" then d.buffFor = nil end
         markDirty()         -- buff-to-watch edit -> unsaved edit
       end
     end)
@@ -1356,7 +1398,8 @@ local function MakeRow(parent, y, def, labelText, src, reflow)
     -- right-click = unlearn now (force a freshly-swapped item to re-learn immediately)
     bf:SetScript("OnMouseUp", function(self, button)
       if button == "RightButton" then
-        if SBF.ClearLearnedBuff then SBF.ClearLearnedBuff(key) else def.buff, def.buffFor, def.buffSpell = nil, nil, nil end
+        if SBF.ClearLearnedBuff then SBF.ClearLearnedBuff(key)
+        else local d = D(); d.buff, d.buffFor, d.buffSpell = nil, nil, nil end
         markDirty()          -- cleared the slot's learned buff -> unsaved edit
         self:SetText(""); self:ClearFocus()
         print("|cff45c4a0SBF|r cleared " .. key .. " buff (slot + item cache) - re-learns on next cast.")

@@ -1,38 +1,34 @@
-# SBF 2026.09.01.1
+# SBF 2026.09.02.4
 
-**If you do not play in English, this is the release that makes SBF work.**
+**Every edit in the options window sticks now.**
 
-Huge thanks to **Fisu**, who found and reported both of the bugs below with the exact cause already tracked down. They had been in SBF since the beginning, and they were invisible to us because everything works fine on an English client. That is a rough way to meet an addon, and the report was better than most bug reports we write ourselves.
+Last release fixed the on/off switch writing to a dead copy of your settings after an automatic profile swap. This release fixes the same disconnect everywhere else on the row, because it turned out the switch was not the only victim:
 
-- **The fishing key now casts on every language.** The built-in "Cast Fishing" action was hard-coded to the English spell name. On a German, French, Spanish or any other non-English client that name does not exist, and a macro pointing at a spell that does not exist fails without saying anything. So a fresh install did nothing at all when you pressed the key. SBF now looks the spell up properly, in whatever your client calls it.
-- **Catches, casts and stats are recorded again.** SBF worked out whether you were fishing by checking the spell name and one specific spell ID. Neither matched on Fisu's client, so SBF never noticed the fishing line was out. Fishing worked, fish were caught, and the Stats tab sat at zero. It now recognizes the cast by reading your own fishing spellbook instead of assuming.
-- **Fighting back works on every language too.** The built-in combat action had the same problem as the fishing key: it named the assist spell in English, so on any other client it quietly cast nothing while SBF carried on as if it had. If you fish somewhere things attack you, this is the one you will notice.
-- **Food, drink and boat buffs are tracked correctly** on non-English clients too. Same root cause in two more places, found while checking whether anything else made the same assumption.
+- **Items you add, remove or reorder in a slot picker stay added, removed and reordered**, including when a profile swap happens mid-session with the window open. Before this, an edit could look fine on screen, never reach the addon, and be gone after a reload.
+- **The firing mode button and the buff-to-watch box** write to your live profile the same way now.
+- **Your selected items show their zone info again.** The orange "not confirmed in this zone" tint, the list of zones an item has worked in, and the works-in-all-zones toggle were only appearing on items you had NOT picked. They now show on the items you actually fish with, which is where they matter.
 
-If you reported odd behavior before and gave up, please try again.
+**Hiding items is reversible, like the tooltip always said.**
 
-**Slots that are switched off now stay off.**
+- Hiding a learned item from a picker used to also delete the record that would let "Show hidden items" bring it back, so the promised way back did not exist. It does now.
+- There is a **"Restore all hidden" button** in Settings next to "Show hidden items", for when you want everything back without clicking each one.
+- The item tooltip claimed shift-click did two different things. It does one thing: hide. The tooltip says so.
 
-- **Turning a slot off works, and keeps working.** Two separate faults could let a slot you had switched off keep firing. One left the slot's own key connected. The other could quietly disconnect the options window from your live profile after an automatic profile swap, so the switch you flipped was writing somewhere nothing read. The window agreed with you while the addon carried on regardless.
-- **Edits stick.** The same disconnect could throw away a change you had just made, with no error and nothing to see.
+**Boats: SBF will never cast a spell your character does not know.**
 
-**The loot key.**
+If you share one profile across characters, the boat slot can hold Levitate, Path of Frost, Water Walking and Zen Flight side by side. Each character is supposed to use the ones it knows and skip the rest. One path through the code skipped that check and fired whatever was loaded, so a monk could sit there trying to cast a priest spell forever instead of using its own. Every cast now goes through the same "do you actually know this?" gate, on every character, in every mode.
 
-- **Fixed a loot key that stopped working after an update.** A one-time upgrade step could remove your loot key binding while moving it, leaving you with nothing bound and no message about it. It now checks the move succeeded before removing anything, and tells you at login if no key can reach Interact.
-- **Fixed two other ways the loot key could go dead** and never recover on its own, including one that could freeze it for the rest of the session.
+**Non-English clients: the follow-through.**
 
-**Chum, and items the game has changed.**
+Last release made SBF work off English. This one finishes the corners we found while checking everything else:
 
-- **The Midnight chums are corrected.** Blizzard removed the use effect from Shimmer Spinefish, Tender Lumifin and Hollow Grouper. SBF was still treating them as chum, reporting them as thrown while nothing happened. They are out, and Sin'dorei Swarmer and Root Crab now track the right buffs.
-- **An item that can no longer be used is skipped** instead of being thrown over and over, so one dead item cannot stall your rotation.
-- **Hide items you never want offered.** Shift and left-click any item in a slot picker to hide it. Turn on "Show hidden items" in Settings to bring them back.
+- **A cast that misses fishable water is now detected on every language**: the short back-off, the fail sound, and the log entry all fire. Off English these were silently doing nothing, so a whole class of cast results was missing from your Stats.
+- **The Perception stat reads correctly** instead of showing 0.
+- **Pole enchant time-left reads correctly on Russian, Korean and Chinese clients.** Before this the timer never matched, SBF thought the enchant was always expired, and it would burn roughly three lures per fishing cycle re-applying one that was fine.
 
-**New: telling us when something goes wrong.**
+**Small but real.**
 
-- **Report a bug.** There is a button at the top of the About page. It opens a window with a summary of your setup that you can copy straight into a report: versions, settings, what is in each slot and which item would fire next, and anything that went wrong during the session. It contains no character name, realm or guild.
-- On a non-English client it also includes your language and fishing spell details, so the next report like Fisu's can be answered without a round of questions.
-
-**New: the AddOns button and the minimap.**
-
-- **SBF now appears in the game's AddOns menu** on the minimap, where it should have been all along. Haul, Megaphone, Gadgets and Coffer are in there now too.
-- **You can hide the minimap button.** Settings, Minimap, "Hide the minimap button". You can still open SBF with /sbf or from the AddOns menu, and right-clicking SBF there puts the button back.
+- Building a status report, or having a Haul bar show SBF's next action, no longer nudges the addon itself. Reading is reading now; before, just drawing a bar could quietly consume a chum burst or start a boat sequence.
+- A cast you reeled in normally could occasionally be logged as "nothing happened" because the key watcher blinked at the wrong instant. It waits for real evidence now.
+- Status reports now include the combat and heal slots, which were missing entirely.
+- Pressing Backspace in the bug report window no longer erases the report you were about to copy.

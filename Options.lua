@@ -1190,6 +1190,23 @@ local function Build()
   cbf:SetScript("OnEditFocusLost", commitCBF)
   cbf:SetScript("OnEscapePressed", function(s) commitCBF(s); s:ClearFocus() end)
   helpTip(cbf, "set.castBackoff")
+  -- "Restore all hidden": the bulk way back from shift+left hides, across EVERY picker slot at once.
+  -- (SBF.UnhideAll existed with zero callers — the per-item restore path was the only way back, which
+  -- meant turning on "Show hidden items" and clicking each one.) Re-renders any built strips so the
+  -- restored items reappear without a tab bounce.
+  local unhideBtn = CreateFrame("Button", nil, pBe, "UIPanelButtonTemplate")
+  unhideBtn:SetSize(130, 22); unhideBtn:SetText("Restore all hidden"); Theme.Button(unhideBtn)
+  unhideBtn:SetScript("OnClick", function()
+    local n = 0
+    for _, catSlot in pairs(ns.CATALOG_SLOT or {}) do n = n + ((SBF.UnhideAll and SBF.UnhideAll(catSlot)) or 0) end
+    print(("|cff45c4a0SBF|r restored %d hidden item entr%s across all pickers."):format(n, n == 1 and "y" or "ies"))
+    for _, rerender in ipairs(catalogStripRenders) do rerender() end
+  end)
+  unhideBtn:SetScript("OnEnter", function(self)
+    showTip(self, "Restore all hidden items",
+      "Un-hides every item you've hidden with shift+left-click, in every picker slot. They reappear immediately.")
+  end)
+  unhideBtn:SetScript("OnLeave", GameTooltip_Hide)
   -- idle-restore delay (Profile advanced mode)
   local irf = makeEdit(50, tostring(SBFDB.idleRestoreSeconds or 30))
   local function commitIRF(self)
@@ -1341,8 +1358,11 @@ local function Build()
           function() return SBFDB.showWarbandItems ~= false end, function(v) SBFDB.showWarbandItems = v end, "set.showWarbandItems") },
       -- the way BACK from a shift+left hide. Off by default (hidden means hidden); on, suppressed items
       -- reappear dimmed in every picker so a shift+left-click can restore them.
-      { check = C("Show hidden items  (dimmed - shift+left-click one to restore it)",
-          function() return SBFDB.showHiddenItems end, function(v) SBFDB.showHiddenItems = v and true or false end, "set.showHiddenItems") },
+      { dir = "row", align = "center",
+        { check = C("Show hidden items  (dimmed - shift+left-click one to restore it)",
+            function() return SBFDB.showHiddenItems end, function(v) SBFDB.showHiddenItems = v and true or false end, "set.showHiddenItems"), grow = 1 },
+        { frame = unhideBtn },
+      },
     },
 
     { section = "Minimap",

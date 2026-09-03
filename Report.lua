@@ -78,16 +78,19 @@ local function itemState(id)
 end
 
 local function slotLines(out)
-  local slots = (SBF.ActiveSlots and SBF.ActiveSlots()) or {}
+  -- Walk the DESCRIPTOR list, not ActiveSlots: combat/heal live per-CHARACTER (SBF.CharSlots), so iterating
+  -- the profile's working slots silently omitted them from every report — a combat-macro bug was invisible in
+  -- the very diagnostic meant to show it. SBF.SlotDef(k) routes each id to its real store (profile vs char).
   local keys = {}
-  for k in pairs(slots) do keys[#keys + 1] = k end
+  for _, s in ipairs(ns.SLOTS or {}) do keys[#keys + 1] = s.id end
+  if #keys == 0 then for k in pairs((SBF.ActiveSlots and SBF.ActiveSlots()) or {}) do keys[#keys + 1] = k end end
   table.sort(keys)
   out[#out + 1] = "-- slots.  '>' = would fire next.  OFF slots never fire regardless of what is listed. --"
   for _, k in ipairs(keys) do
-    local d = slots[k]
+    local d = (SBF.SlotDef and SBF.SlotDef(k)) or nil
     local sd = ns.SlotDef and ns.SlotDef(k)
-    local has = (d.item or d.toy or d.spell or (d.macro and d.macro ~= "")) and true or false
-    if has or #(d.items or {}) > 0 or d.skip then
+    local has = d and (d.item or d.toy or d.spell or (d.macro and d.macro ~= "")) and true or false
+    if d and (has or #(d.items or {}) > 0 or d.skip) then
       out[#out + 1] = ("  %-12s %-3s mode=%-7s repeat=%-3s refresh=%-4s owe=%-3s buff=%s(%s)"):format(
         k, d.skip and "OFF" or "ON",
         tostring((ns.SlotMode and sd and ns.SlotMode(sd, d)) or d.mode or "-"),
@@ -239,7 +242,11 @@ local function catalogLines(out)
       -- `retired` is the catalog's own "deliberately removed" marker. ItemUsable cannot stand in for it: it
       -- returns TRUE for anything the player is not carrying, so retired items you don't own counted as gaps
       -- and every report inflated the number with removals we made on purpose.
-      if not listed[id] and m and m.knowledge and not m.retired then total = total + 1; orphan[id] = true end
+      -- `unlisted` is the same idea for a whole slot: tagged for a deliberately never-emitted slot (Buffs is
+      -- user-driven, no shipped suggestions — decided 2026-09-02), knowledge ships so a hand-dropped item
+      -- seeds right. Counting those five made the "orphan" number non-zero on 100% of installs, which buried
+      -- the real drift this audit exists to catch.
+      if not listed[id] and m and m.knowledge and not m.retired and not m.unlisted then total = total + 1; orphan[id] = true end
     end
     if total > 0 then
       local inUse = {}
@@ -420,8 +427,11 @@ function SBF.ShowBugReport(note)
     eb:SetAutoFocus(false)
     eb:SetScript("OnEscapePressed", function() f:Hide() end)
     -- read-only in practice: any edit just restores the report, so a stray keypress can't corrupt what
-    -- gets pasted back to us.
-    eb:SetScript("OnChar", function(self) self:SetText(f._text or ""); self:HighlightText() end)
+    -- gets pasted back to us. Guarded via OnTextChanged (user-gated), NOT OnChar: Backspace/Delete never
+    -- fire OnChar, so with the whole blob pre-selected the most natural key there is silently WIPED it.
+    eb:SetScript("OnTextChanged", function(self, user)
+      if user and self:GetText() ~= (f._text or "") then self:SetText(f._text or ""); self:HighlightText() end
+    end)
     sf:SetScrollChild(eb); f.eb, f.sf = eb, sf
 
     local sel = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")

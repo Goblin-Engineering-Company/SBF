@@ -175,18 +175,24 @@ ns.ROTATION_ORDER = ROTATION_ORDER
 local LEARN_SKIP_IDS = { 430, 433, 167152 }        -- Drink / Food / Refreshment
 local LEARN_SKIP = { ["Drink"] = true, ["Food"] = true, ["Eating"] = true, ["Refreshment"] = true }
 local learnSkipResolved = false
+local learnSkipDone = {}                           -- per-id: which of LEARN_SKIP_IDS have already resolved
 local function resolveLearnSkip()
   if learnSkipResolved then return end
   local get = C_Spell and C_Spell.GetSpellName
   if not get then return end
-  local any = false
+  -- Latch only when EVERY id resolved, and re-try only the ones that haven't. The old `any` latch closed
+  -- the door on the FIRST success, so a partially warm spell cache (1 of 3 ids ready at login) permanently
+  -- skipped resolving the rest — exactly the "Trinken" class of miss this list exists to prevent.
+  local all = true
   for _, sid in ipairs(LEARN_SKIP_IDS) do
-    local ok, nm = pcall(get, sid)
-    if ok and nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then
-      LEARN_SKIP[nm] = true; any = true
+    if not learnSkipDone[sid] then
+      local ok, nm = pcall(get, sid)
+      if ok and nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then
+        LEARN_SKIP[nm] = true; learnSkipDone[sid] = true
+      else all = false end
     end
   end
-  learnSkipResolved = any                          -- retry next call if spell data was not ready yet
+  learnSkipResolved = all
 end
 -- ONE test, so a caller can never re-introduce the raw table lookup that only worked in English.
 local function isLearnSkipped(name)
@@ -391,6 +397,43 @@ ns.SlotMode = slotMode
 
 -- ===== effect time (the `effect` dispatch) =====
 
+-- Locale-correct "(N unit)" matchers, built from the client's OWN enchant time-left format strings
+-- (ITEM_ENCHANT_TIME_LEFT_*, e.g. "%s (%d |4hour:hours;)"): drop the leading name %s, expand each
+-- |4form:form(:form); grammar token into one pattern per declension (ruRU has three), escape, and turn
+-- the %d into a capture. The old ASCII [Hh]/[Mm]/[Ss] literals matched deDE/frFR by coincidence and
+-- ruRU/koKR/zhCN/zhTW not at all — an unreadable enchant read as "due every press": roughly 3 lures
+-- burned per 66s cycle plus a false catalog-buff-wrong anomaly against the pole-enchant items. The
+-- ASCII patterns survive below as FALLBACKS only, tried after every locale pattern misses.
+local ENCHANT_LEFT_PATTERNS = {}   -- { { pattern, multiplier-to-seconds } }
+do
+  local function addFormat(fmt, mult)
+    if type(fmt) ~= "string" then return end
+    local tail = fmt:match("%%s%s*(.+)$") or fmt          -- keep only the duration part after the name %s
+    local forms = { tail }
+    while true do                                          -- expand |4a:b(:c); into one string per form
+      local nxt, again = {}, false
+      for _, f in ipairs(forms) do
+        local pre, body, post = f:match("^(.-)|4(.-);(.*)$")
+        if body then
+          again = true
+          for form in (body .. ":"):gmatch("(.-):") do nxt[#nxt + 1] = pre .. form .. post end
+        else nxt[#nxt + 1] = f end
+      end
+      forms = nxt
+      if not again then break end
+    end
+    for _, f in ipairs(forms) do
+      local pat = f:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%0")   -- escape pattern magic (incl. the %% of %d)
+      pat = pat:gsub("%%%%d", "(%%d+)")                          -- the literal %d becomes the number capture
+      ENCHANT_LEFT_PATTERNS[#ENCHANT_LEFT_PATTERNS + 1] = { pat, mult }
+    end
+  end
+  addFormat(ITEM_ENCHANT_TIME_LEFT_DAYS,  86400)
+  addFormat(ITEM_ENCHANT_TIME_LEFT_HOURS, 3600)
+  addFormat(ITEM_ENCHANT_TIME_LEFT_MIN,   60)
+  addFormat(ITEM_ENCHANT_TIME_LEFT_SEC,   1)
+end
+
 -- seconds left on the fishing TOOL's temporary enchant (slot 28, e.g. Writhing Wiggleworm). The
 -- tool sits in a profession-equipment slot GetWeaponEnchantInfo can't read, so we parse the
 -- "(N min)" off its tooltip. nil if no enchant / unreadable.
@@ -400,8 +443,12 @@ local function poleEnchantSecondsLeft()
   if not (data and data.lines) then return nil end
   for _, ln in ipairs(data.lines) do
     local t = ln.leftText
-    if t then
-      local n = t:match("%((%d+)%s*[Hh]")        ; if n then return tonumber(n) * 3600 end
+    if t and not (issecretvalue and issecretvalue(t)) then   -- 12.0: secret strings error on string ops
+      for _, p in ipairs(ENCHANT_LEFT_PATTERNS) do           -- locale-correct first (see above)
+        local n = t:match(p[1])
+        if n then return tonumber(n) * p[2] end
+      end
+      local n = t:match("%((%d+)%s*[Hh]")        ; if n then return tonumber(n) * 3600 end   -- ASCII fallbacks
       n = t:match("%((%d+)%s*[Mm]")               ; if n then return tonumber(n) * 60 end
       n = t:match("%((%d+)%s*[Ss]")               ; if n then return tonumber(n) end
     end
@@ -560,7 +607,9 @@ local function itemUsable(id)
 end
 ns.itemUsable = itemUsable
 function SBF.ItemUsable(id) return itemUsable(id) end       -- public: the Options tray + the console audit
-function SBF.ResetDeadItemCache() wipe(deadCache) end
+-- (SBF.ResetDeadItemCache was deleted: zero callers, and a "dead" verdict is only ever recorded AFTER
+-- GetItemInfo returned real data, so there is no cold-cache misjudgment for a reset to heal. The cache is
+-- session-only regardless — a /reload clears it.)
 
 -- ready to APPLY right now: owned AND off cooldown AND actually capable of doing something. The picker
 -- prefers these so it never loads an item that can't fire (e.g. a bobber on its ~10-min item cooldown while
@@ -632,7 +681,8 @@ local function slotReady(def)
     for _, id in ipairs(def.items) do if entryReady(id) then return true end end
     return false
   end
-  if (def.macro and def.macro ~= "") or def.spell then return true end   -- can't gauge a macro/spell — assume ready
+  if def.macro and def.macro ~= "" then return true end   -- can't gauge a macro — assume ready
+  if def.spell then return spellUsable(def.spell) end     -- a bare spell IS gaugeable: known here or not at all
   local iid = curItemId(def)
   if iid then return itemReady(iid) end
   return true
@@ -668,7 +718,10 @@ local function pickItem(slotDef, def)
   -- Falling-cast boat (Zen Flight): while airborne inside the arm window, FORCE-arm the boat that was DUE when
   -- we jumped (SBF._zenPickId, set by zenBoatDue) — not a fresh rotation pick — so the mid-fall cast is exactly it.
   if slotDef and slotDef.role == "boat" and IsFalling and IsFalling()
-      and SBF._zenArm and GetTime() < SBF._zenArm and SBF._zenPickId then
+      and SBF._zenArm and GetTime() < SBF._zenArm and SBF._zenPickId
+      and spellUsable(SBF._zenPickId) then                -- NEVER force-arm a spell this character doesn't know:
+    -- every other arm path gates through entryReady/spellUsable; this force-arm bypassed them all, so a stale
+    -- or cross-character _zenPickId could load an uncastable spell. Unknown -> fall through to the gated modes.
     -- Keep Zen the armed pick — do NOT advance the cycle here. A missed cast leaves you falling back in, and the
     -- pick must stay Zen so it jumps you again until Zen is ACTIVE (it's permanent, so the cycle ends on it).
     armItem(def, "spell:" .. SBF._zenPickId); return
@@ -813,7 +866,11 @@ local function resetApplyTries(def)
 end
 ns.resetApplyTries = resetApplyTries
 
-local function slotDue(slotDef, def)
+-- `peek` = read-only evaluation: answer "is it due?" WITHOUT the self-healing writes (_owe void, stale-buff
+-- clear, _applyTries reset). Passive readers reach this constantly — Haul's {sbf.next} token, a Gadgets bar,
+-- the /sbf report — and a diagnostic must never change the state it reports on. The writes are deferred, not
+-- lost: the next real press re-evaluates and applies them.
+local function slotDue(slotDef, def, peek)
   local k = slotDef.id
   -- fireAll: due while ANY item still needs applying (one item per press; stays due across presses
   -- until every item's buff is up). Same helper pickItem uses, so they can't disagree.
@@ -828,7 +885,7 @@ local function slotDue(slotDef, def)
     -- per-item hold, so the counter hits applyMaxTries BEFORE the first possible reset. The old form covered
     -- N<=2 only. Any item whose aura reads live proves the slot works, which is the same evidence the
     -- non-fireAll path uses one screen down.
-    if due == nil or anyEntryBuffLive(def) then resetApplyTries(def) end
+    if (due == nil or anyEntryBuffLive(def)) and not peek then resetApplyTries(def) end
     return due ~= nil
   end
   -- burst debt (chum): while it still owes casts, force it due (bypass the grace) so consecutive presses
@@ -840,7 +897,8 @@ local function slotDue(slotDef, def)
   if (def._owe or 0) > 0 then
     local goal = burstGoal(slotDef, def)
     local have = effectLeft(slotDef, def)
-    if goal and have and have >= goal then def._owe = 0   -- burst achieved / buff tall enough -> done
+    if goal and have and have >= goal then                -- burst achieved / buff tall enough -> done
+      if not peek then def._owe = 0 end
     else return true end
   end
   local refresh = slotRefresh(slotDef, def)
@@ -851,7 +909,7 @@ local function slotDue(slotDef, def)
     local b = SBF.GetBuff(def.buff)
     local left = b and b.secondsLeft
     if left and left >= refresh then return false end   -- old buff still up
-    def.buff, def.buffFor, def.buffSpell = nil, nil, nil -- expired -> re-learn the new item (name + spellId)
+    if not peek then def.buff, def.buffFor, def.buffSpell = nil, nil, nil end -- expired -> re-learn the new item (name + spellId)
   end
   -- grace: just fired -> let the buff land before re-evaluating. Re-firing now would restart a
   -- food/drink channel and the ~10s buff would never apply. Also throttles the unknown-buff retry.
@@ -861,7 +919,7 @@ local function slotDue(slotDef, def)
   -- because we fired it" — we always re-check that the buff actually EXISTS. effectLeft present -> not
   -- due, and this clears any misfire streak / back-off (the buff landed, so the slot is healthy).
   local left = effectLeft(slotDef, def)
-  if left then resetApplyTries(def); return left < refresh end
+  if left then if not peek then resetApplyTries(def) end return left < refresh end
   -- effectLeft is nil. If this slot's effect is CHECKABLE — an enchant (tooltip-readable) or an aura whose
   -- buff name we KNOW — then nil means the buff is genuinely GONE, so re-apply NOW. We deliberately do NOT
   -- fall back to the learned buffDuration here: a stale/too-long learned duration (e.g. 3600s) was silently
@@ -1049,35 +1107,42 @@ end
 
 -- post-combat / post-damage heal to full. Health is a SECRET value in 12.0 (can't be compared), so
 -- we guard the read and lean on "heal until health stops rising" (UNIT_HEALTH change events).
-local function roleHeal(s)
+local function roleHeal(s, peek)
   local healDef = SBF.SlotDef("heal")
   if not (hasAction(healDef) and not healDef.skip and SBF._healing) then return end
   -- accessibility gate (same rule as every other slot): if the heal is a bare SPELL this character doesn't
   -- know, don't fire it — clear the heal state so it can't get stuck retrying a cast that always fails. A
   -- macro heal can't be checked (a macro can /cast anything), so it's left to the user, like the combat macro.
-  if healDef.spell and not spellUsable(healDef.spell) then SBF._healing = false; return end
+  -- `peek` (passive readers: {sbf.next}, reports) evaluates the same downgrades against a LOCAL and leaves
+  -- SBF._healing alone — a diagnostic must never end a heal cycle.
+  local healing = SBF._healing
+  if healDef.spell and not spellUsable(healDef.spell) then
+    if not peek then SBF._healing = false end
+    return
+  end
   local hp, mx = UnitHealth("player"), UnitHealthMax("player")
   local secret = issecretvalue and (issecretvalue(hp) or issecretvalue(mx))
   local stable = SBF._lastHealthChange and (GetTime() - SBF._lastHealthChange) > (SBFDB.healStable or 3)
   if (not secret) and mx and mx > 0 and hp >= mx then
-    SBF._healing = false                               -- health readable + full
+    healing = false                                    -- health readable + full
   elseif stable then
-    SBF._healing = false                               -- health stopped rising = full
+    healing = false                                    -- health stopped rising = full
   elseif (not SBF._healUntil) or GetTime() > SBF._healUntil then
-    SBF._healing = false                               -- hard-stop backstop (window)
+    healing = false                                    -- hard-stop backstop (window)
   end
-  if SBF._healing then return healDef, "Heal", "heal", false end
+  if not peek then SBF._healing = healing end
+  if healing then return healDef, "Heal", "heal", false end
 end
 
 -- boat: cast the dinghy from the water, surface onto it, OR recast to refresh while standing on it.
-local function roleBoat(s)
+local function roleBoat(s, peek)
   local def = s.boat
   if not def then return end
   -- Falling-boat is now ACTIVE (Zen up): advance the cycle PAST it so the next boat-need rotates on to the other
   -- boat. Done on ACTIVE (not on the cast attempt) so a missed cast keeps Zen the armed pick, but once it lands
   -- the cycle isn't stuck on Zen forever. (Idempotent: sets _idx to the falling-boat's slot each tick it's up.)
   local activeSid = SBF.FallingBoatActive and SBF.FallingBoatActive(def)
-  if activeSid and def.items then
+  if activeSid and def.items and not peek then
     for i, e in ipairs(def.items) do
       if spellEntry(e) == activeSid then def._idx = i; break end
     end
@@ -1090,8 +1155,13 @@ local function roleBoat(s)
   -- Once it's active (hovering) the arm/cast stop, so it can't recast you into the atmosphere.
   local zenDue = zenBoatDue(def)
   if zenDue then
-    SBF._zenArm = GetTime() + (SBFDB.zenArmWindow or 5)
-    SBF._zenPickId = zenDue
+    if not peek then                                  -- passive readers must not arm the Zen window:
+      -- `or 2` matches the SEEDED DB default (Core.lua zenArmWindow = 2) and the override picker's fallback;
+      -- this site alone said 5 — the doubled-fact drift class. The key is seeded, so the fallback is
+      -- near-unreachable, but the two copies must agree for the day it isn't.
+      SBF._zenArm = GetTime() + (SBFDB.zenArmWindow or 2)   -- drawing a Gadgets bar was enough to arm it (S4)
+      SBF._zenPickId = zenDue
+    end
     return nil, "Wait", "idle", false                 -- over water, falling-boat due: idle; JUMP override lifts you
   end
   if SBF._zenArm and GetTime() < SBF._zenArm and IsFalling and IsFalling()
@@ -1107,12 +1177,14 @@ local function roleBoat(s)
   end
 end
 
-function SBF.ComputeNext(acting)
+-- `peek` = read-only: threads through to roleHeal/roleBoat/slotDue so passive readers (GetNext, the report,
+-- DescribeDecision) evaluate the identical decision WITHOUT the engine-state writes a real press performs.
+function SBF.ComputeNext(acting, peek)
   local s = SBF.ActiveSlots()
   local def, label, key, timed
-  def, label, key, timed = roleCombat(s); if def or label then return def, label, key, timed end
-  def, label, key, timed = roleHeal(s);   if def or label then return def, label, key, timed end
-  def, label, key, timed = roleBoat(s);   if def or label then return def, label, key, timed end
+  def, label, key, timed = roleCombat(s);       if def or label then return def, label, key, timed end
+  def, label, key, timed = roleHeal(s, peek);   if def or label then return def, label, key, timed end
+  def, label, key, timed = roleBoat(s, peek);   if def or label then return def, label, key, timed end
   -- in the water but not mounting (in combat, healing, no boat, or skipped): can't fish from the water. AND you
   -- can NEVER fish while FALLING/airborne — so idle rather than futilely returning Fishing. (The falling case is
   -- what produced "state falling, next fishing" when a Zen arm window expired mid-bounce: roleBoat went nil and
@@ -1123,7 +1195,7 @@ function SBF.ComputeNext(acting)
   -- ready to cast: the first DUE rotation slot (effect gone/expiring), in derived priority order, else fish
   for _, k in ipairs(ROTATION_ORDER) do
     local d = s[k]
-    if d and hasAction(d) and not d.skip and slotDue(SLOT_DEF[k], d) then
+    if d and hasAction(d) and not d.skip and slotDue(SLOT_DEF[k], d, peek) then
       if slotReady(d) then return d, k:gsub("^%l", string.upper), k, true end   -- has an owned + off-cooldown item
       consumableUsable(k, d, acting)   -- nothing ready (out of item / all on cooldown): warn (real press only) + fall through to fish
     end
@@ -1136,8 +1208,8 @@ function SBF.GetNext()
   -- When the JUMP override is live, THAT is what the key does — the ComputeNext macro (often "Wait" for the
   -- zen/surfacing idle) is what a press WOULD do if the override weren't there. Report the truth: Jump.
   if SBF._dynOverride == "JUMP" then return "Jump" end
-  local _, label = SBF.ComputeNext()
-  return label
+  local _, label = SBF.ComputeNext(nil, true)   -- peek: this is reached from Haul/Gadgets templating — it must
+  return label                                  -- never arm Zen, end a heal, or void a chum debt (S4)
 end
 
 
@@ -1149,6 +1221,13 @@ end
 local function actionLine(def)
   if not def then return "" end
   if def.macro and def.macro ~= "" then return def.macro end
+  -- A bare SPELL this character doesn't know must never reach the macro. Every PICK path already gates on
+  -- spellUsable, but the legacy def.spell mirror (syncDefItem copies tray item 1 into it, no known-check)
+  -- can carry another character's spell across a shared profile — and when nothing in the list is ready,
+  -- pickItem deliberately "leaves whatever's loaded", which IS that mirror. That is how a monk ended up
+  -- /cast-ing the priest's Levitate every boat-due press. This is the one choke point every slot's cast
+  -- line flows through, so the rule "never fire a spell you don't know" is enforced here, not per-caller.
+  if def.spell and not spellUsable(def.spell) then return "" end
   local name = defName(def)
   return name and ("/cast " .. name) or ""
 end
@@ -1442,7 +1521,16 @@ local function postFire(slotDef, def, timed)
       local ck = iid and catalogKnow(iid)
       if rec and (rec.buff or rec.buffSpell) then
         rec.rejected = rec.rejected or {}
-        rec.rejected[#rec.rejected + 1] = { buff = rec.buff, buffSpell = rec.buffSpell, at = time(), tries = maxTries }
+        -- DEDUPE + CAP: the same wrong identity re-tripping every session used to append forever — unbounded
+        -- growth in SBFData.db.items for zero new evidence. The SAME value again bumps a count + timestamp on
+        -- the existing entry; a NEW value appends, keeping only the most recent distinct rejections.
+        local last = rec.rejected[#rec.rejected]
+        if last and last.buff == rec.buff and last.buffSpell == rec.buffSpell then
+          last.n = (last.n or 1) + 1; last.at = time(); last.tries = maxTries
+        else
+          rec.rejected[#rec.rejected + 1] = { buff = rec.buff, buffSpell = rec.buffSpell, at = time(), tries = maxTries }
+          while #rec.rejected > (SBFDB.rejectedKeep or 5) do table.remove(rec.rejected, 1) end
+        end
       end
       -- ONLY accuse the catalog of the value the slot was ACTUALLY watching. Gated on `ck.buff` alone, this
       -- fired for any catalogued item whose typed, learned or stale buff missed three times, and named the
