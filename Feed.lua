@@ -57,9 +57,10 @@ local feed = Data.Provide("SBF", {
 -- NOT the LDB object — so the live text must be written to feed.object.text (writing feed.text would
 -- be inert). Guarded on feed.object.
 if feed and feed.object and C_Timer then
-  C_Timer.NewTicker(1, function()
+  local function tickText()
     local st = (SBF.GetState and SBF.GetState()) or ""
     local sk = (SBF.GetFishing and SBF.GetFishing()) or ""
     feed.object.text = (st ~= "" and (st .. "  ") or "") .. sk
-  end)
+  end
+  C_Timer.NewTicker(1, tickText)
 end

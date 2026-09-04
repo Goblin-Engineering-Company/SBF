@@ -19,11 +19,17 @@ SBF.Help = {
       .. "Fishing Journal on screen (a quick flash) to load it, then fishes as normal. WoW only reports your per-expansion "
       .. "skill after the journal is opened, and it needs doing once each session (login or /reload), not once per "
       .. "character. On by default. Turn it off to open the journal yourself instead." },
-  ["set.combatWindows"] = { title = "Get out of the way in combat",
+  ["set.combatWindows"] = { title = "Hide interface in combat",
     body = "When you enter combat the Welcome window hides and the Settings window collapses to its title bar, so they can't "
       .. "block your screen mid-fight. They come back when combat ends. Turn this off to leave the windows where they are." },
   ["set.castBackoff"] = { title = "Cast-fail back-off",
     body = "After a cast that misses the water (\"too shallow\" / \"requires fishable water\"), the loop waits this many seconds before retrying, so it doesn't hammer a dead spot." },
+  ["set.idleTimeout"] = { title = "Idle timeout",
+    body = "How long after your last cast (no action-key press, no line in the water) SBF considers you done "
+      .. "fishing. This is a performance feature: when it fires, SBF stands down completely and stops all of its "
+      .. "background key and buff monitoring, dropping its CPU use to roughly 0% until you fish again. If "
+      .. "\"Auto-restore gear when idle\" is on, your normal gear and audio come back at the same moment. Your "
+      .. "next action-key press wakes everything back up." },
   ["set.mouseDouble"] = { title = "Double-click window (sec)",
     body = "How fast the two presses must be to count as a double-click for mouse double-click fishing "
       .. "(turned on with \"Use mouse (double-click)\" in Settings -> Interface options). Lower = you must double-click "
@@ -67,9 +73,10 @@ SBF.Help = {
 
   -- ===== Settings: Gear =====
   ["set.idleRestore"] = { title = "Auto-restore gear when idle",
-    body = "When you stop fishing for this many seconds (no action-key press), automatically re-equip the "
-      .. "gear you had on before the profile gear went on. Your next action press re-equips the profile "
-      .. "gear. On by default; the seconds field sets the idle threshold." },
+    body = "When the idle timeout fires (see \"Idle timeout\" under Fishing behavior), automatically re-equip "
+      .. "the gear you had on before the profile gear went on, and restore your normal audio. Your next action "
+      .. "press re-equips the profile gear. On by default. SBF's standby happens at that same timeout whether "
+      .. "or not this is checked - this checkbox only controls the gear/audio restore." },
 
   -- ===== Settings: Audio (focus) =====
   ["set.focusAudio"] = { title = "Focus fishing",

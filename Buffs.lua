@@ -82,6 +82,10 @@ local watchFrame, watchAccum = nil, 0
 local WATCH_TICK = 0.3               -- seconds between scans (low-freq: a buff appearing is not time-critical)
 
 local function watchTick()
+  -- Standby: fishing mode off (Core.lua) = nobody is fishing, so a buff scan is pure idle CPU. Edges are
+  -- re-evaluated on the first tick after the next action press re-arms the mode; a buff that expired during
+  -- standby simply fires its falling edge late, which every consumer already tolerates (they re-check on press).
+  if not SBF.fishingModeActive then return end
   if not next(watchers) then return end
   local byName = SBF.ScanBuffs()     -- one scan shared across every watcher this tick
   for _, w in pairs(watchers) do

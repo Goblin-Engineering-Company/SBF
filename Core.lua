@@ -91,7 +91,9 @@ local DB_DEFAULTS = {
                         -- (runtime field SBFDB._lastTiers is set in code, not defaulted here)
   swapFlash = true,     -- flash the swapped-in profile's name as a raid-warning on an auto-swap
   autoDismount = false, -- on a GROUND mount, fire /dismount so you can fish (never while flying)
-  requireTwoButtons = false, -- two-button mode: the action key only casts; loot via the loot key
+  requireTwoButtons = false, -- two-button mode: the action key only casts; loot via the loot key.
+                             -- Choosing it also IMPLIES the game's "Enable interact key" option stays on
+                             -- (EnsureInteractKeyCVar) - looting rides that option, no separate toggle.
   gamepadEnable = false, -- "Enable controller support": ticking sets the GamePadEnable CVar to "1" so
                          -- controller buttons generate PAD* binding tokens SBF can bind. Unticking leaves
                          -- the CVar alone (the user may use the gamepad elsewhere). May need a /reload.
@@ -165,7 +167,9 @@ local DB_DEFAULTS = {
   -- gear snapshot + "in fishing gear" flag are PER-CHARACTER now: SBFDB.charGear[name-realm].{snapshot,on}
   -- (see Gear.lua SBF.CharGear). The old account-wide gearSnapshot/profileGearOn are migrated then dropped.
   idleRestoreEnabled = true,  -- ON by default: after this long with no action press, auto-restore your normal gear
-  idleRestoreSeconds = 30,    -- idle threshold (s) for the auto-restore above (also restores focus audio)
+  idleRestoreSeconds = 30,    -- THE idle window (s): one clock, three effects — gear auto-restore (gated by the
+                              -- flag above), focus-audio restore, and dropping fishing mode into standby (always;
+                              -- see SBF.fishingModeActive). The next action press re-arms fishing mode.
   focusAudio = {        -- reconfigure WoW's own sound while fishing (isolate the bobber splash), parallel to gear
     enabled = false,
     -- the "focus" preset: isolate the splash (full SFX/master, mute music/ambience, low dialog). The 5
@@ -1295,8 +1299,16 @@ local function reelWatchTick()      -- per FRAME while channeling
   end
 end
 
+-- ==== FISHING MODE: the master on/off for the background machinery ====
+-- SBF.fishingModeActive is armed by the FIRST action-key press (PreClick) and dropped by the idle observer
+-- below after the idle window (the SAME timer that swaps gear back and restores audio — one clock, three
+-- effects). While it's OFF the addon is on standby: the per-frame reel watch + the 0.15s key-override poll
+-- (this frame) and the buff-watch scan (Buffs.lua) all early-return, so parking in a city costs ~nothing.
+-- Runtime-only (not saved): after a /reload you're in standby until the next press, which is correct.
+SBF.fishingModeActive = false
 local pollFrame, pollAccum = CreateFrame("Frame"), 0
 pollFrame:SetScript("OnUpdate", function(_, elapsed)
+  if not SBF.fishingModeActive then return end   -- standby: no reel watch, no override poll (see above)
   reelWatchTick()                        -- EVERY frame: a reel tap can be shorter than pollInterval
   pollAccum = pollAccum + elapsed
   if pollAccum >= (ns.numOrDefault and ns.numOrDefault(SBFDB.pollInterval, 0.15) or 0.15) then
@@ -1323,10 +1335,19 @@ idleFrame:SetScript("OnUpdate", function(_, elapsed)
   idleAccum = idleAccum + elapsed
   if idleAccum < 1 then return end
   idleAccum = 0
+  local now = GetTime()
   -- genuinely idle long enough with fishing state applied: return everything fishing reconfigured (gear +
   -- focus audio) to normal, via the single packaged revert (each side-effect self-guards / no-ops when off).
-  if SBF.ShouldIdleRestore and SBF.ShouldIdleRestore(GetTime()) and SBF.RevertToNormal then
+  if SBF.ShouldIdleRestore and SBF.ShouldIdleRestore(now) and SBF.RevertToNormal then
     SBF.RevertToNormal()
+  end
+  -- ...and the SAME idle clock drops FISHING MODE (see the block above pollFrame): standby the background
+  -- machinery until the next action press. Independent of the gear gates — fires even with no gear package
+  -- applied and idle-restore off. The override clear needs the out-of-combat check (ClearOverrideBindings is
+  -- protected in combat); combat just defers the drop to a later 1s tick, which is fine — combat IS activity.
+  if SBF.ShouldDropFishingMode and SBF.ShouldDropFishingMode(now) and not InCombatLockdown() then
+    SBF.fishingModeActive = false
+    JumpController.Clear()               -- pollFrame is asleep now, so nothing else would release an override
   end
 end)
 
@@ -2071,6 +2092,60 @@ function SBF.CheckLootKeyReachable()
     .. "set one in SBF's Keybinds tab, or bind \"Interact With Target\" in the game's Key Bindings.")
 end
 
+-- SBF's looting rides the game's OWN Interact action in BOTH modes — two-button via the dedicated loot key,
+-- single-button via the mid-channel override that turns the fishing key into INTERACTTARGET (DesiredOverride's
+-- "interact" branch) — and Interact only soft-targets the bobber while the client option "Enable interact key"
+-- (Options -> Gameplay -> Controls; CVar softTargetInteract) is on. Players untick it by accident, and the only
+-- symptom is looting silently doing nothing - a dead-key class the reachability check above is BLIND to,
+-- because the binding itself is fine. Using SBF's interact-based looting IMPLIES this option (there is
+-- deliberately no separate toggle): anything below "always" (3) is raised to 3 (3 covers keyboard AND
+-- controller; 1 = gamepad-only and 2 = KBM-only each strand the other input).
+-- HISTORY: this assert used to run ONLY in two-button mode, which produced the exact field report it was built
+-- to prevent - a single-button player whose client had the option off got dead looting, and ticking the
+-- two-button box "fixed" it purely because that was the only path that forced the CVar. Single-button mode has
+-- the same dependency, so the assert now covers it too. The one case that genuinely doesn't need the CVar: a
+-- single-button interact SLOT carrying a custom action or a non-Interact game binding - that press never
+-- touches soft-targeting, so we leave the player's client setting alone.
+-- Re-asserted at login, when two-button mode is switched on, on every action press (PreClick), and on
+-- CVAR_UPDATE (the accidental mid-session uncheck). Our own SetCVar re-fires CVAR_UPDATE; the cur == 3
+-- early-return ends that loop.
+function SBF.EnsureInteractKeyCVar()
+  if not SBFDB.requireTwoButtons then
+    -- single-button: needed unless the interact slot loots some OTHER way (custom action / custom binding)
+    local s = SBF.ActiveSlots and SBF.ActiveSlots()
+    local interact = s and s.interact
+    if hasAction(interact) then return end
+    if interact and interact.gameBinding and interact.gameBinding ~= "INTERACTTARGET" then return end
+  end
+  local get, set = C_CVar and C_CVar.GetCVar, C_CVar and C_CVar.SetCVar
+  if not (get and set) then return end
+  local cur = tonumber(get("softTargetInteract"))
+  if cur == 3 then return end
+  local ok = pcall(set, "softTargetInteract", "3")
+  if ok then
+    if SBF.Anomaly then
+      SBF.Anomaly("interact-cvar-restored", "softTargetInteract was %s with interact-based looting in use "
+        .. "(%s-button mode) - raised to 3 (always)", tostring(cur), SBFDB.requireTwoButtons and "two" or "single")
+    end
+    print("|cff45c4a0SBF|r turned the game's |cffffd100interact key|r back on (Options > Controls > "
+      .. "\"Enable interact key\") - looting the bobber works through it.")
+  end
+end
+do
+  local f = CreateFrame("Frame")
+  f:RegisterEvent("CVAR_UPDATE")
+  f:SetScript("OnEvent", function(_, _, name)
+    -- CVAR_UPDATE's first arg is historically the cvar's EVENT ALIAS, not the cvar name, and a live test
+    -- proved an exact-name match missed the options-panel uncheck entirely. Normalize case + underscores so
+    -- "softTargetInteract", "SOFT_TARGET_INTERACT" and friends all match. This watcher is best-effort now;
+    -- the per-press check in the fishing PreClick is the guarantee.
+    if SBF.EnsureInteractKeyCVar and name
+       and tostring(name):lower():gsub("_", "") == "softtargetinteract" then
+      SBF.EnsureInteractKeyCVar()
+    end
+  end)
+end
+
 -- (re)load every button + (re)apply its key combo. Deferred if in combat.
 function SBF.Apply()
   if InCombatLockdown() then
@@ -2171,7 +2246,16 @@ function SBF.Apply()
       -- handled as its OWN press below (just before the fish macro), so a gear swap and the fishing channel
       -- never collide on the same press.
       SBF.lastActionAt = GetTime()
+      -- FISHING MODE: the first action press arms it (wakes the reel watch / override poll / buff scan);
+      -- the idle observer drops it again after the idle window. See the block above pollFrame.
+      SBF.fishingModeActive = true
       SBF.gearArmed = nil   -- legacy arm flag no longer gates anything; the gear gate below does
+
+      -- Two-button mode implies the game's "Enable interact key" option; verify it on EVERY press. The
+      -- CVAR_UPDATE watcher missed a live uncheck in testing (the event's name argument is not reliably
+      -- the cvar name), so the press is the guarantee: one GetCVar per press, a no-op when already right,
+      -- and the loot key can never stay dead longer than the next cast.
+      if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar() end
 
       -- Self-correct the active profile: if auto-swap is on and a different profile resolves for where we
       -- are (e.g. the login resolution ran before the map loaded and stuck on Default), switch now so the
@@ -3015,6 +3099,7 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     end
     SBF.ResetJumpSwitches()      -- public: clear any jump switch a user set before the command was removed
     SBF.MigrateBindsToNative()   -- lift old internal fishing/interact-controller binds into the native bindings
+    SBF.EnsureInteractKeyCVar()  -- two-button: the game's "Enable interact key" option must be on to loot
     -- ...then verify the loot key survived it. Runs after the migration on purpose: the migration is the most
     -- likely thing to have taken the key away.
     if C_Timer and C_Timer.After then

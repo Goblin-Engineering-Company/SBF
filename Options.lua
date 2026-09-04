@@ -29,6 +29,14 @@ local MakeMouseButton      = ns.opt.MakeMouseButton
 local BindText             = ns.opt.BindText
 local catalogStrips        = ns.opt.catalogStrips
 local catalogStripRenders  = ns.opt.catalogStripRenders
+-- Raise a Box `note` label to the checkbox-label font (notes default to GameFontHighlightSmall), so a
+-- labeled-field row can read at the same size as the checkboxes around it. Re-applies the palette color
+-- afterwards because SetFontObject resets the fontstring's color to the font object's own.
+local function bigLabel(fs)
+  if not fs then return end
+  fs:SetFontObject("GameFontHighlight")
+  if Theme and Theme.Font then Theme.Font(fs, "text") end
+end
 local STRIP_X              = ns.opt.STRIP_X
 local ROW_H                = ns.opt.ROW_H
 local ICON                 = ns.opt.ICON
@@ -1207,7 +1215,7 @@ local function Build()
       "Un-hides every item you've hidden with shift+left-click, in every picker slot. They reappear immediately.")
   end)
   unhideBtn:SetScript("OnLeave", GameTooltip_Hide)
-  -- idle-restore delay (Profile advanced mode)
+  -- the shared idle timeout (Fishing behavior): standby + gear restore + audio restore all fire off it
   local irf = makeEdit(50, tostring(SBFDB.idleRestoreSeconds or 30))
   local function commitIRF(self)
     local n = tonumber(self:GetText()); if n and n >= 1 then SBFDB.idleRestoreSeconds = math.floor(n) end
@@ -1216,7 +1224,7 @@ local function Build()
   irf:SetScript("OnEnterPressed", function(s) commitIRF(s); s:ClearFocus() end)
   irf:SetScript("OnEditFocusLost", commitIRF)
   irf:SetScript("OnEscapePressed", function(s) commitIRF(s); s:ClearFocus() end)
-  helpTip(irf, "set.idleRestore")
+  helpTip(irf, "set.idleTimeout")
 
   -- ---- Optimizations: Focus-audio settings button ----
   local faBtn = Theme.MakeButton(pBe, 130, "Audio settings\226\128\166",
@@ -1301,6 +1309,9 @@ local function Build()
               if panel._refreshLootUI then panel._refreshLootUI() end
               if panel._refreshKeysPage then panel._refreshKeysPage() end
               if SBF.Apply then SBF.Apply() end
+              -- looting in this mode rides the game's interact key; make sure the client option backing
+              -- it ("Enable interact key" / softTargetInteract) is on the moment the mode is chosen
+              if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar() end
             end, "set.twoButton"), grow = 1 },
         { check = C("Enable controller (gamepad) support",
             function() return SBFDB.gamepadEnable and true or false end,
@@ -1337,13 +1348,25 @@ local function Build()
       { check = C("Refresh skill on cast",
           function() return SBFDB.refreshSkillOnCast ~= false end,
           function(v) SBFDB.refreshSkillOnCast = v and true or false end, "set.refreshSkillOnCast") },
-      { check = C("Get out of the way in combat",
+      { check = C("Hide interface in combat",
           function() return (SBFDB.combatWindowMode or "collapse") ~= "off" end,
           function(v) SBFDB.combatWindowMode = v and "collapse" or "off" end, "set.combatWindows") },
-      { dir = "row", align = "center",
+      -- The two labeled-field rows below match the checkboxes around them: pad.l = 26 starts the label at
+      -- the same x as a checkbox's TEXT (24px box + 2px gap), and bigLabel raises the note's font from the
+      -- note default (GameFontHighlightSmall) to the checkbox-label font. Addon-side on purpose — no lib edit.
+      { dir = "row", align = "center", pad = { l = 26 },
         { note = { text = "Cast-fail back-off", color = "text",
-                   onBuild = function(fs) helpLabel(fs, "set.castBackoff") end } },
+                   onBuild = function(fs) bigLabel(fs); helpLabel(fs, "set.castBackoff") end } },
         { frame = cbf }, { note = { text = "sec", color = "text" } },
+      },
+      -- THE idle window: one clock, three effects (standby + gear restore + audio restore). It used to live
+      -- inside "Profile advanced mode" glued to the gear checkbox, but the standby made it genuinely
+      -- independent of gear — it fires for everyone — so it belongs with the fishing behavior.
+      { dir = "row", align = "center", pad = { l = 26 },
+        { note = { text = "Idle timeout", color = "text",
+                   onBuild = function(fs) bigLabel(fs); helpLabel(fs, "set.idleTimeout") end } },
+        { frame = irf }, { note = { text = "sec", color = "text" } },
+        { note = { text = "(SBF stands down until your next cast)", color = "textMuted" } },
       },
     },
 
@@ -1402,14 +1425,9 @@ local function Build()
             function() return SBFDB.autoSwap ~= false end, function(v) SBFDB.autoSwap = v end, "set.autoSwap") },
         { check = C("Flash on profile swap",
             function() return SBFDB.swapFlash ~= false end, function(v) SBFDB.swapFlash = v end, "set.swapFlash") },
-        { dir = "row", align = "center",
-          { check = C("Auto-restore gear when idle",
-              function() return SBFDB.idleRestoreEnabled end, function(v) SBFDB.idleRestoreEnabled = v end, "set.idleRestore") },   -- no grow: left-pack the "After [n] sec idle" group next to the checkbox
-          { dir = "row", align = "center",
-            { note = { text = "After", color = "text", onBuild = function(fs) helpLabel(fs, "set.idleRestore") end } },
-            { frame = irf }, { note = { text = "sec idle", color = "text" } },
-          },
-        },
+        -- gear restore rides the shared idle timeout (the "Idle timeout" field under Fishing behavior)
+        { check = C("Auto-restore gear when idle  (at the idle timeout)",
+            function() return SBFDB.idleRestoreEnabled end, function(v) SBFDB.idleRestoreEnabled = v end, "set.idleRestore") },
       },
     },
 

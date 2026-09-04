@@ -303,15 +303,36 @@ end
 -- equip by hand while standing still (the "gear keeps swapping back on its own, no keypress" bug). After one
 -- successful RevertToNormal clears on/audioOn, every later tick short-circuits here (the combat-deferred case
 -- keeps on=true, so it correctly keeps wanting to restore until PLAYER_REGEN_ENABLED drains it).
+-- The ONE idle clock, shared by both decisions below: "genuinely idle" = some activity was recorded, the
+-- idle window has fully elapsed since the last of it (action press OR fishing-channel activity), and the
+-- Fishing channel isn't live right now (a bobber sitting out is active, not idle). idleRestoreSeconds is
+-- the single tunable window — gear restore and the fishing-mode drop deliberately share it, so "the gear
+-- swap timer" and "the standby timer" are the same timer in the user's mental model.
+local function idlePast(now)
+  if not SBFDB then return false end
+  local lastActive = math.max(SBF.lastActionAt or 0, SBF.lastFishingAt or 0)
+  if lastActive == 0 or (now - lastActive) <= (SBFDB.idleRestoreSeconds or 30) then return false end
+  if SBF.IsFishingChannel and SBF.IsFishingChannel() then return false end   -- still channeling Fishing: not idle
+  return true
+end
+
 function SBF.ShouldIdleRestore(now)
   if SBF._emEditing then return false end                          -- editing the set: never yank gear mid-edit
   if not (SBFDB and SBFDB.idleRestoreEnabled) then return false end
   local cg = SBF.CharGear and SBF.CharGear()
   if not (cg and (cg.on or cg.audioOn)) then return false end      -- nothing applied -> nothing to revert
-  local lastActive = math.max(SBF.lastActionAt or 0, SBF.lastFishingAt or 0)
-  if lastActive == 0 or (now - lastActive) <= (SBFDB.idleRestoreSeconds or 30) then return false end
-  if SBF.IsFishingChannel and SBF.IsFishingChannel() then return false end   -- still channeling Fishing: not idle
-  return true
+  return idlePast(now)
+end
+
+-- Should the idle observer drop FISHING MODE right now? Fishing mode (SBF.fishingModeActive, armed by the
+-- first action-key press) is what keeps the background machinery running — the per-frame reel watch, the
+-- 0.15s key-override poll, the buff-watch scan. Dropping it puts all of that on standby until the next
+-- press. Deliberately INDEPENDENT of the gear gates above: a player with no gear package and idle-restore
+-- off must still get the standby (they were the ones paying the always-on CPU cost forever). No _emEditing
+-- gate either — dropping the mode touches no gear, so an Equipment Manager edit doesn't need to block it.
+function SBF.ShouldDropFishingMode(now)
+  if not SBF.fishingModeActive then return false end
+  return idlePast(now)
 end
 
 -- The SINGLE "enter / re-assert the fishing state" entry point, mirroring RevertToNormal(): applies focus

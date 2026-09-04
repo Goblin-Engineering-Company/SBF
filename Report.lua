@@ -371,6 +371,12 @@ function SBF.BugReport(note)
     out[#out + 1] = ("keys    : fishing[%s]"):format(keyMap("fishing"))
     out[#out + 1] = ("          interact/loot: SBF[%s]  native[%s]"):format(
       keyMap("interact"), #nativeKeys > 0 and table.concat(nativeKeys, " ") or "none")
+    -- the CLIENT option behind the interact key (softTargetInteract; 3 = always). Two-button looting is
+    -- dead below 3 with no error and a perfectly healthy binding, so a report must show it. Two-button
+    -- mode implies the option (EnsureInteractKeyCVar asserts it), so anything but 3 here on a two-button
+    -- report means the assert itself is failing - also worth knowing.
+    local sti = (C_CVar and C_CVar.GetCVar and C_CVar.GetCVar("softTargetInteract")) or "?"
+    out[#out + 1] = ("          softTargetInteract=%s (3=always; two-button looting needs 3)"):format(tostring(sti))
     -- the loot key is NOT a native binding - it exists only as an override SBF applies (see the trace in
     -- auto-memory). "no key bound" or "->|NONE|" on the interact line IS the dead-loot-key report.
     -- GECBind is a FILE-LOCAL in every consumer, never a global — reading it here was always nil, so this
