@@ -1,34 +1,21 @@
-# SBF 2026.09.02.4
+# SBF 2026.09.03.6
 
-**Every edit in the options window sticks now.**
+**SBF now gets out of the way when you stop fishing.**
 
-Last release fixed the on/off switch writing to a dead copy of your settings after an automatic profile swap. This release fixes the same disconnect everywhere else on the row, because it turned out the switch was not the only victim:
+New in Settings under Fishing behavior: an **Idle timeout** (30 seconds by default). When you stop fishing for that long, SBF stands down completely: all of its background key and buff monitoring stops, and the addon's CPU use drops to roughly 0% until you fish again. Your first cast press wakes everything back up, instantly. If you use gear profiles, your normal gear and audio come back at that same moment, exactly like before; the timeout now covers everyone, gear profiles or not. This is a performance release as much as a feature: parked in town, SBF now costs the same as an addon that is not running at all.
 
-- **Items you add, remove or reorder in a slot picker stay added, removed and reordered**, including when a profile swap happens mid-session with the window open. Before this, an edit could look fine on screen, never reach the addon, and be gone after a reload.
-- **The firing mode button and the buff-to-watch box** write to your live profile the same way now.
-- **Your selected items show their zone info again.** The orange "not confirmed in this zone" tint, the list of zones an item has worked in, and the works-in-all-zones toggle were only appearing on items you had NOT picked. They now show on the items you actually fish with, which is where they matter.
+**Looting cannot silently die anymore, in either mode.**
 
-**Hiding items is reversible, like the tooltip always said.**
+SBF's looting rides the game's own interact key. If the client option "Enable interact key" (Options, Gameplay, Controls) is off, looting just quietly does nothing: no error, the key does not respond, and it looks like SBF is broken. Some of you found the accidental workaround of turning on two-button mode, which happened to flip that option back on. Now SBF keeps the option enabled itself whenever looting works through interact, in single-button AND two-button mode, and re-checks it on every cast so a mid-session change cannot strand you. If SBF has to turn it back on, it tells you in chat.
 
-- Hiding a learned item from a picker used to also delete the record that would let "Show hidden items" bring it back, so the promised way back did not exist. It does now.
-- There is a **"Restore all hidden" button** in Settings next to "Show hidden items", for when you want everything back without clicking each one.
-- The item tooltip claimed shift-click did two different things. It does one thing: hide. The tooltip says so.
+**Settings clarity.**
 
-**Boats: SBF will never cast a spell your character does not know.**
+- "Get out of the way in combat" is now "Hide interface in combat", which says what it does.
+- The idle seconds field moved out of Profile advanced mode into Fishing behavior, since it is no longer a gear-only setting. The gear checkbox stays where it was and simply rides the shared timeout.
+- The labeled rows in Fishing behavior now match the size and alignment of the checkbox text around them.
 
-If you share one profile across characters, the boat slot can hold Levitate, Path of Frost, Water Walking and Zen Flight side by side. Each character is supposed to use the ones it knows and skip the rest. One path through the code skipped that check and fired whatever was loaded, so a monk could sit there trying to cast a priest spell forever instead of using its own. Every cast now goes through the same "do you actually know this?" gate, on every character, in every mode.
+**Thank you.**
 
-**Non-English clients: the follow-through.**
+This release exists because players took the time to report what they were seeing: **bayerithe99706**, **Murphieus**, **joesonline**, and **Delphinen** all sent in issues that pointed us straight at the problems above. If we did this right, every one of them is fixed for you now.
 
-Last release made SBF work off English. This one finishes the corners we found while checking everything else:
-
-- **A cast that misses fishable water is now detected on every language**: the short back-off, the fail sound, and the log entry all fire. Off English these were silently doing nothing, so a whole class of cast results was missing from your Stats.
-- **The Perception stat reads correctly** instead of showing 0.
-- **Pole enchant time-left reads correctly on Russian, Korean and Chinese clients.** Before this the timer never matched, SBF thought the enchant was always expired, and it would burn roughly three lures per fishing cycle re-applying one that was fine.
-
-**Small but real.**
-
-- Building a status report, or having a Haul bar show SBF's next action, no longer nudges the addon itself. Reading is reading now; before, just drawing a bar could quietly consume a chum burst or start a boat sequence.
-- A cast you reeled in normally could occasionally be logged as "nothing happened" because the key watcher blinked at the wrong instant. It waits for real evidence now.
-- Status reports now include the combat and heal slots, which were missing entirely.
-- Pressing Backspace in the bug report window no longer erases the report you were about to copy.
+Found something else? Want a say in what gets built next? Head to **https://goblineng.co** to report bugs and vote on upcoming features, or use the one-click bug report on the About tab (it builds a paste-ready blob, and it is exactly how these issues got found). The votes genuinely steer the roadmap.
