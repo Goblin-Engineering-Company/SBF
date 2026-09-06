@@ -1348,6 +1348,13 @@ local function Build()
       { check = C("Refresh skill on cast",
           function() return SBFDB.refreshSkillOnCast ~= false end,
           function(v) SBFDB.refreshSkillOnCast = v and true or false end, "set.refreshSkillOnCast") },
+      { check = C("Zone buff glow  (screen edges glow while a special fishing buff is on you)",
+          function() local z = SBFDB.zoneIndicator; return not z or z.enabled ~= false end,
+          function(v)
+            SBFDB.zoneIndicator = SBFDB.zoneIndicator or {}
+            SBFDB.zoneIndicator.enabled = v and true or false
+            if SBF.ZoneIndicatorRefresh then SBF.ZoneIndicatorRefresh() end
+          end, "set.zoneIndicator") },
       { check = C("Hide interface in combat",
           function() return (SBFDB.combatWindowMode or "collapse") ~= "off" end,
           function(v) SBFDB.combatWindowMode = v and "collapse" or "off" end, "set.combatWindows") },

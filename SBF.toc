@@ -3,7 +3,7 @@
 ## Notes: One key runs the whole fishing loop. Keybound item/macro slots (food, drink, lure, boat, cast, interact), built for combo keys (modifier combos supported).
 ## Category: GEC
 ## Author: Goblin Engineering Company
-## Version: 2026.09.03.6
+## Version: 2026.09.06.2
 ## X-GEC-Channel: public
 ## X-WoWI-ID: 27173
 ## X-Curse-Project-ID: 1625876
@@ -42,5 +42,6 @@ Help.lua
 OptionsWidgets.lua
 Options.lua
 Report.lua
+Indicator.lua
 Welcome.lua
 Uplink.lua

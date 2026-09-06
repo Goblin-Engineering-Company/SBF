@@ -203,24 +203,36 @@ end
 -- makes a user report actionable without any back-and-forth: it names the item and both identities.
 local function catalogLines(out)
   local db = (SBF.OutputDB and SBF.OutputDB("items")) or {}
+  -- "274588 Toxic Tlhapi [learned-only]" instead of a bare number: the first real field report arrived as
+  -- five naked ids that had to be looked up by hand, and the reader also couldn't tell WHICH lane the
+  -- archived value came from. [catalog] = we ship knowledge for this item (check OUR value first);
+  -- [learned-only] = no shipped knowledge, the learner itself got polluted. Item name is best-effort
+  -- (C_Item needs the item cached; the id is always there).
+  local function itemLabel(id)
+    local n = tonumber(id)
+    local nm = n and C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(n)
+    local cm = n and ns.Catalog and ns.Catalog.meta and ns.Catalog.meta[n]
+    local lane = (cm and cm.knowledge) and "[catalog]" or "[learned-only]"
+    return (nm and (tostring(id) .. " " .. nm) or tostring(id)) .. " " .. lane
+  end
   local rows = {}
   for id, r in pairs(db) do
     if r.devOverride then
       rows[#rows + 1] = ("  %s: live=\"%s\"(%s)  catalog=\"%s\"(%s)  [dev override active]"):format(
-        tostring(id), tostring(r.devOverride.buff), tostring(r.devOverride.buffSpell),
+        itemLabel(id), tostring(r.devOverride.buff), tostring(r.devOverride.buffSpell),
         tostring(r.devOverride.wasBuff or "?"), tostring(r.devOverride.wasSpell or "?"))
     elseif r.relearn then
       rows[#rows + 1] = ("  %s: catalog=\"%s\"(%s) never applied - re-learn armed"):format(
-        tostring(id), tostring(r.relearn.buff), tostring(r.relearn.buffSpell or "?"))
+        itemLabel(id), tostring(r.relearn.buff), tostring(r.relearn.buffSpell or "?"))
     elseif r.rejected and #r.rejected > 0 then
       local last = r.rejected[#r.rejected]
       rows[#rows + 1] = ("  %s: rejected buff \"%s\"(%s) x%d"):format(
-        tostring(id), tostring(last.buff or "?"), tostring(last.buffSpell or "?"), #r.rejected)
+        itemLabel(id), tostring(last.buff or "?"), tostring(last.buffSpell or "?"), #r.rejected)
     end
   end
   table.sort(rows)
   if #rows > 0 then
-    out[#out + 1] = "-- catalog disagreements (item id: what we saw vs what we shipped) --"
+    out[#out + 1] = "-- catalog disagreements (rejected = the learned-lane value archived when the watched buff missed 3 casts) --"
     for _, r in ipairs(rows) do out[#out + 1] = r end
   end
 

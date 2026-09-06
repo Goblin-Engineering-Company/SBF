@@ -24,6 +24,11 @@ SBF.Help = {
       .. "block your screen mid-fight. They come back when combat ends. Turn this off to leave the windows where they are." },
   ["set.castBackoff"] = { title = "Cast-fail back-off",
     body = "After a cast that misses the water (\"too shallow\" / \"requires fishable water\"), the loop waits this many seconds before retrying, so it doesn't hammer a dead spot." },
+  ["set.zoneIndicator"] = { title = "Zone buff glow",
+    body = "When a special area buff that boosts fishing is on your character, the edges of the screen get a "
+      .. "soft green glow so you know you're standing somewhere worth fishing. Ships watching Cursed Land and "
+      .. "Waters, the Coiled Isle blessing behind Captain Tokka's reputation arc (it appears after Turning Back "
+      .. "the Surges). The first time it lights up each visit, SBF also says what it means on screen." },
   ["set.idleTimeout"] = { title = "Idle timeout",
     body = "How long after your last cast (no action-key press, no line in the water) SBF considers you done "
       .. "fishing. This is a performance feature: when it fires, SBF stands down completely and stops all of its "

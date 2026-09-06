@@ -450,8 +450,23 @@ local function learnBuff(slotKey, cdef, deadline)
     return   -- nothing new for this pick — cheap early-out (no ScanBuffs snapshot)
   end
   local before = expiryMap()
+  -- COMBAT BOUNDARY GUARD: in 12.x combat an aura's NAME goes secret, and a secret-named aura is NOT keyed
+  -- in the name-keyed snapshot (Buffs.lua ScanBuffs). So a permanent buff that was up the whole time (the
+  -- player's fishing-gear "Fishing For Attention") drops OUT of `before` while in combat and "appears" to a
+  -- poll tick after combat ends - reading as freshly-landed and getting learned as the fired item's buff
+  -- (the Toxic Tlhapi wedge, player-reported 2026-09-05). Never compare snapshots across a combat-state
+  -- change: re-baseline and keep polling instead.
+  local beforeCombat = (UnitAffectingCombat and UnitAffectingCombat("player")) or false
   local function poll()
     if not cdef or alreadyLearned() then return end
+    local nowCombat = (UnitAffectingCombat and UnitAffectingCombat("player")) or false
+    if nowCombat ~= beforeCombat then
+      before, beforeCombat = expiryMap(), nowCombat
+      bdbg("combat %s mid-learn for %s: re-baselined the before-snapshot (secret names skew the diff)",
+        nowCombat and "STARTED" or "ENDED", slotKey)
+      if GetTime() < deadline then C_Timer.After(0.5, poll) end
+      return
+    end
     -- buffs OTHER slots already own — never steal one (that's the oversized-bobber/chum cross-contamination:
     -- a slot in its 4s learn window grabs a neighbour's still-up aura). Guard on BOTH the display NAME and the
     -- durable spellID identity: the name can go secret in combat / be renamed, so a slot that owns the aura by
@@ -475,6 +490,15 @@ local function learnBuff(slotKey, cdef, deadline)
         elseif auraIsMount(spellId) then
           -- a mount aura (mounted mid-learn) — reject it and keep scanning for the real fishing buff
           bdbg("reject |cffff6060%s|r (spell %s) for %s: |cffff6060mount aura|r", name, tostring(spellId), slotKey)
+        elseif atIid and not (d and d.duration and d.duration > 0) then
+          -- PERMANENT-AURA GUARD: an ITEM fire (chum/food/lure/toy) always yields a FINITE buff — an aura
+          -- with no duration is equipment/stance pollution (readable live: no expiry), and learning one
+          -- wedges the slot forever (always "up" -> never due -> the 3-miss self-heal can never trip).
+          -- Determined at scan time from the aura itself, no pre-built list. Spell picks (atIid nil, e.g.
+          -- Zen Flight legitimately duration-less) are exempt. d==nil (details unreadable) also rejects
+          -- for an item: an identity we can't verify is not worth a permanent wrong learn.
+          bdbg("reject |cffff6060%s|r (spell %s) for %s: |cffff6060no duration (permanent aura)|r",
+            name, tostring(spellId), slotKey)
         else
           if not fireAll then            -- fireAll uses PER-ITEM buffs (entryBuffName), never a slot-level one
             cdef.buff = name             -- display name (localised; can go secret in combat)
