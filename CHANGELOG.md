@@ -1,21 +1,21 @@
-# SBF 2026.09.03.6
+# SBF 2026.09.06.2
 
-**SBF now gets out of the way when you stop fishing.**
+**Buff learning can no longer be fooled by combat.**
 
-New in Settings under Fishing behavior: an **Idle timeout** (30 seconds by default). When you stop fishing for that long, SBF stands down completely: all of its background key and buff monitoring stops, and the addon's CPU use drops to roughly 0% until you fish again. Your first cast press wakes everything back up, instantly. If you use gear profiles, your normal gear and audio come back at that same moment, exactly like before; the timeout now covers everyone, gear profiles or not. This is a performance release as much as a feature: parked in town, SBF now costs the same as an addon that is not running at all.
+The first bug report sent through the new in-game reporter (thank you, whoever you are!) uncovered a nasty one. When you enter or leave combat, the game briefly hides buff names, and SBF's buff learner could mistake a permanent equipment buff reappearing for the buff your chum fish just applied. Once that wrong learn stuck, the chum slot thought its buff was always up and simply stopped throwing fish, forever, with no error. Two fixes make this impossible now: the learner never compares buff snapshots across a combat change, and a thrown item can never learn a permanent buff at all (a real chum, food, or lure buff always has a timer; a buff with no timer is your gear talking). Both guards work on every item, including ones we have never seen.
 
-**Looting cannot silently die anymore, in either mode.**
+**Seven chum fish are now built in.**
 
-SBF's looting rides the game's own interact key. If the client option "Enable interact key" (Options, Gameplay, Controls) is off, looting just quietly does nothing: no error, the key does not respond, and it looks like SBF is broken. Some of you found the accidental workaround of turning on two-button mode, which happened to flip that option back on. Now SBF keeps the option enabled itself whenever looting works through interact, in single-button AND two-button mode, and re-checks it on every cast so a mid-session change cannot strand you. If SBF has to turn it back on, it tells you in chat.
+Five new fish joined the built-in catalog with verified buffs, so they work correctly on the first throw and can never mis-learn: Lynxfish, Gore Guppy, and Toxic Tlhapi (Skillful Chum), plus Arcane Wyrmfish and Spotted Killifish (Perceptive Chum). That covers the Coiled Isle catches alongside the Quel'Thalas ones from before. If your Toxic Tlhapi was stuck from the bug above, this release un-sticks it automatically.
 
-**Settings clarity.**
+**New: the zone buff glow.**
 
-- "Get out of the way in combat" is now "Hide interface in combat", which says what it does.
-- The idle seconds field moved out of Profile advanced mode into Fishing behavior, since it is no longer a gear-only setting. The gear checkbox stays where it was and simply rides the shared timeout.
-- The labeled rows in Fishing behavior now match the size and alignment of the checkbox text around them.
+When a special area blessing that boosts fishing is on your character, the edges of your screen now glow a soft green so you know you are standing somewhere worth fishing. It ships watching Cursed Land and Waters, the Coiled Isle blessing behind Captain Tokka's reputation arc (it appears after Turning Back the Surges). The first time it lights up, SBF tells you on screen what the glow means. It never blocks your mouse or covers the middle of the screen, and it can be turned off in Settings under Fishing behavior.
 
-**Thank you.**
+**Bug reports got easier to read.**
 
-This release exists because players took the time to report what they were seeing: **bayerithe99706**, **Murphieus**, **joesonline**, and **Delphinen** all sent in issues that pointed us straight at the problems above. If we did this right, every one of them is fixed for you now.
+The catalog section of the in-game bug report now shows item names instead of bare ID numbers, and labels each line so it is obvious whether the entry involves a built-in item or one SBF learned on its own.
 
-Found something else? Want a say in what gets built next? Head to **https://goblineng.co** to report bugs and vote on upcoming features, or use the one-click bug report on the About tab (it builds a paste-ready blob, and it is exactly how these issues got found). The votes genuinely steer the roadmap.
+**Found something? Want a say in what gets built next?**
+
+Head to **https://goblineng.co** to report bugs and vote on upcoming features, or use the one-click bug report on the About tab. This entire release started from a single pasted report, so it works.
