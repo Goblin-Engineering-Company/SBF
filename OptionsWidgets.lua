@@ -3,6 +3,12 @@
 -- (re-bound to local names at the top of Options.lua, so call sites there are unchanged).
 -- The window handle itself lives in Options.lua and is reached here via ns.opt.panel.
 local ADDON, ns = ...
+-- Forever (interface 16001) ships the modern API WITHOUT the deprecated item globals; alias them to C_Item
+-- file-locally (never write _G, so other addons' own version checks are untouched). Retail: unchanged.
+local GetItemInfo = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+local GetItemInfoInstant = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
+local GetItemCount = GetItemCount or (C_Item and C_Item.GetItemCount)
+local GetItemIcon = GetItemIcon or (C_Item and C_Item.GetItemIconByID)
 
 -- Shared GECTheme handle (per-addon palette via SBFDB.themePreset). Every access through this proxy
 -- first re-activates SBF's preset, so reading Theme.colors.X always returns SBF's palette — even from a
@@ -69,7 +75,8 @@ local FISHING_SPELL_ID = 131474
 local function DefaultSlotTexture(slotId, def)
   if slotId == "fishing" then
     if def.item or def.spell or def.toy or (def.macro and def.macro ~= "") then return nil end
-    return (C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(FISHING_SPELL_ID)) or nil
+    -- 131474 doesn't exist on WoW: Forever (its Fishing is the vanilla rank 7620), so fall back to that icon.
+    return (C_Spell and C_Spell.GetSpellTexture and (C_Spell.GetSpellTexture(FISHING_SPELL_ID) or C_Spell.GetSpellTexture(7620))) or nil
   elseif slotId == "combat" then
     local empty = not (def.item or def.spell or def.toy or (def.macro and def.macro ~= ""))
     if empty or def.macro == ns.DEFAULT_COMBAT_MACRO then return "Interface\\Icons\\Trade_Engineering" end

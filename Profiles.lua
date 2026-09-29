@@ -6,6 +6,10 @@
 -- Editing model: working copy (SBF.working). Activation deep-copies the profile's slots into the
 -- working copy; the engine fishes with the working copy; Save commits it back, Revert discards.
 local _, ns = ...
+-- Forever (interface 16001) ships the modern API WITHOUT the deprecated item globals; alias them to C_Item
+-- file-locally (never write _G, so other addons' own version checks are untouched). Retail: unchanged.
+local GetItemInfo = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+local GetItemInfoInstant = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
 SBF = SBF or {}
 
 -- deepcopy: profiles hold only plain tables/strings/numbers/bools (no functions/userdata), so a

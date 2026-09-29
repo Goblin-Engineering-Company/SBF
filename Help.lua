@@ -25,10 +25,8 @@ SBF.Help = {
   ["set.castBackoff"] = { title = "Cast-fail back-off",
     body = "After a cast that misses the water (\"too shallow\" / \"requires fishable water\"), the loop waits this many seconds before retrying, so it doesn't hammer a dead spot." },
   ["set.zoneIndicator"] = { title = "Zone buff glow",
-    body = "When a special area buff that boosts fishing is on your character, the edges of the screen get a "
-      .. "soft green glow so you know you're standing somewhere worth fishing. Ships watching Cursed Land and "
-      .. "Waters, the Coiled Isle blessing behind Captain Tokka's reputation arc (it appears after Turning Back "
-      .. "the Surges). The first time it lights up each visit, SBF also says what it means on screen." },
+    body = "Screen edges glow green while the Cursed Land and Waters blessing is on you on the Coiled Isle: "
+      .. "fish here for Captain Tokka reputation. SBF also announces it on screen the moment it lands." },
   ["set.idleTimeout"] = { title = "Idle timeout",
     body = "How long after your last cast (no action-key press, no line in the water) SBF considers you done "
       .. "fishing. This is a performance feature: when it fires, SBF stands down completely and stops all of its "
@@ -107,6 +105,27 @@ SBF.Help = {
     body = "Play a sound when a cast goes out. Pick the sound from the dropdown; Test previews it." },
   ["set.castFailSound"] = { title = "Cast-fail sound",
     body = "Play a sound when a cast fails (too shallow / not fishable water)." },
+  ["set.bobberReach"] = { title = "Bobber reach",
+    body = "While you fish, stretch the interact key's reach so it can reel bobbers that land farther out. Your own "
+      .. "setting comes back when you stop. The very farthest casts can still land beyond it, and the options below "
+      .. "decide what happens then. Fine-tune with /sbf reach <yards>. The bobber also has to land where your camera "
+      .. "can see it: zoomed all the way in, or looking down at your feet, far casts always read as out of reach." },
+  ["set.reachZoom"] = { title = "Zoom out while fishing",
+    body = "The interact key can only grab a bobber your camera can see. While you fish, SBF zooms the camera out "
+      .. "to a comfortable distance if you're closer (first person, for example), and puts your zoom back when you "
+      .. "stop. It never pulls a camera that's already farther out back in. Fine-tune with /sbf reachzoom <distance>." },
+  ["set.reachFaceView"] = { title = "Point the camera straight ahead",
+    body = "Each time you cast, SBF swings the camera behind your character looking straight ahead at a normal "
+      .. "distance, so the bobber lands on screen. It does this with WoW's saved camera view 5, which it resets to "
+      .. "the game default, so leave this off if you use view 5 for something else (or pick another slot with "
+      .. "/sbf reachview <2-5>). Your zoom goes back when you stop." },
+  ["set.reachRecast"] = { title = "Recast when out of reach",
+    body = "When the bobber lands beyond the interact key's reach, your next press recasts instead of doing "
+      .. "nothing. Those casts are counted separately (Stats: Out of reach) and left out of your catch rate. "
+      .. "Unticked: point the mouse at the bobber and press your interact key to reel it. On by default in WoW: Forever." },
+  ["set.reachSound"] = { title = "Out-of-reach sound",
+    body = "Play a sound once when the bobber lands beyond the interact key's reach, so you know to press again "
+      .. "(recast) or point at it." },
   ["set.noFishSound"] = { title = "No-fish-hooked sound",
     body = "Play a sound on \"No fish are hooked\" - you pulled the line too early or too late and got "
       .. "nothing (a MISSED bite). Different from cast-fail (can't cast there at all) and from a cast that "
@@ -137,6 +156,7 @@ SBF.Help = {
     body = "Opens the live state panel showing every signal the loop reads (also /sbf footing)." },
 
 }
+
 
 -- Look up a help entry by key. Returns { title, body } or nil.
 function SBF.GetHelp(key) return (key and SBF.Help and SBF.Help[key]) or nil end

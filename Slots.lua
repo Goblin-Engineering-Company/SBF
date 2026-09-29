@@ -14,6 +14,12 @@
 --     ONLY here). No list, no rotation, no buff tracking. heal/combat fire conditionally.
 -- `boat` is a rotation slot whose ONLY specialness (when + how it fires) lives behind role="boat".
 local _, ns = ...
+-- Forever (interface 16001) ships the modern API WITHOUT the deprecated item globals; alias them to C_Item
+-- file-locally (never write _G, so other addons' own version checks are untouched). Retail: unchanged.
+local GetItemInfo = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+local GetItemInfoInstant = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
+local GetItemCount = GetItemCount or (C_Item and C_Item.GetItemCount)
+local GetItemSpell = GetItemSpell or (C_Item and C_Item.GetItemSpell)
 SBF = SBF or {}
 
 -- Class-agnostic default for a fresh character's combat slot: acquire a live enemy, then let WoW's
@@ -42,7 +48,19 @@ local function assistedCombatName()
   return ASSISTED_COMBAT_FALLBACK          -- NOT cached: retry once the API warms
 end
 ns.assistedCombatName = assistedCombatName
-local function defaultCombatTail() return "/cast " .. assistedCombatName() end
+-- WoW: Forever (and Classic) have no Single-Button Assistant, so "/cast Single-Button Assistant" would cast
+-- nothing. There the default falls back to plain auto-attack: class-agnostic like the assistant, so the combat
+-- half still does something until the player drags in their own macro. Retail is untouched (the fallback only
+-- applies on the classic-layout client, SBF.CLASSIC_GEAR in Gear.lua, and only when the API says unavailable).
+local function assistedCombatAvailable()
+  if not (C_AssistedCombat and C_AssistedCombat.IsAvailable) then return false end
+  local ok, avail = pcall(C_AssistedCombat.IsAvailable)
+  return ok and avail == true
+end
+local function defaultCombatTail()
+  if SBF.CLASSIC_GEAR and not assistedCombatAvailable() then return "/startattack" end
+  return "/cast " .. assistedCombatName()
+end
 local function defaultCombatMacro() return "/targetenemy [noharm][dead]\n" .. defaultCombatTail() end
 ns.defaultCombatMacro = defaultCombatMacro
 -- The stored English form. SavedVariables already hold this exact text for every seeded character, so it
@@ -342,7 +360,7 @@ ns.devBuffOverride = devBuffOverride
 
 local function seedItemBuff(def)
   local iid = curItemId(def)
-  -- dev-only local override outranks the catalog (see devBuffOverride); public never reaches this.
+  -- a local override (devBuffOverride) outranks the catalog when one is set.
   local ov = devBuffOverride(iid)
   if ov then
     def.buff, def.buffFor, def.buffSpell = ov.buff, itemKey(def), ov.buffSpell
@@ -434,12 +452,12 @@ do
   addFormat(ITEM_ENCHANT_TIME_LEFT_SEC,   1)
 end
 
--- seconds left on the fishing TOOL's temporary enchant (slot 28, e.g. Writhing Wiggleworm). The
+-- seconds left on the fishing TOOL's temporary enchant (SBF.PoleSlot(): 28 retail, main hand on Forever). The
 -- tool sits in a profession-equipment slot GetWeaponEnchantInfo can't read, so we parse the
 -- "(N min)" off its tooltip. nil if no enchant / unreadable.
 local function poleEnchantSecondsLeft()
   if not (C_TooltipInfo and C_TooltipInfo.GetInventoryItem) then return nil end
-  local data = C_TooltipInfo.GetInventoryItem("player", SBFDB.poleSlot or 28)
+  local data = C_TooltipInfo.GetInventoryItem("player", SBF.PoleSlot())
   if not (data and data.lines) then return nil end
   for _, ln in ipairs(data.lines) do
     local t = ln.leftText
@@ -1419,7 +1437,7 @@ local function buildPressMacro(acting)
   -- so the pending coat lands on it automatically.
   if slotDef and slotDef.effect == "enchant" and def and not (def.macro and def.macro ~= "") then
     local nm = defName(def)
-    if nm then fallback = "/use " .. nm .. "\n/use " .. (SBFDB.poleSlot or 28) end
+    if nm then fallback = "/use " .. nm .. "\n/use " .. SBF.PoleSlot() end
   end
   -- the Cast Fishing slot works empty: default to /cast Fishing. A dragged macro/item/spell overrides.
   -- BUT if the Cast Fishing slot is turned OFF (skip), the press does NOT fish at all — the macro reduces to

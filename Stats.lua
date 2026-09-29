@@ -138,6 +138,9 @@ local function accumulate(roll, e)
     local cause = e.cause or "unknown"
     roll.interrupts[cause] = (roll.interrupts[cause] or 0) + 1
   end
+  -- out-of-reach metric (Reach.lua): every cast whose bobber landed beyond the interact key's reach carries oor=true,
+  -- whatever it ended as. Counted on its own so it never touches the cast/catch-rate math.
+  if e.oor then roll.oor = (roll.oor or 0) + 1 end
   if e.t then
     roll.firstT = roll.firstT or e.t                      -- earliest counted (records arrive oldest-first)
     if not roll.lastT or e.t > roll.lastT then roll.lastT = e.t end   -- max(): robust even for an unordered slice

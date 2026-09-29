@@ -15,6 +15,9 @@
 
 local ADDON, ns = ...   -- luacheck: ignore 211 (ADDON unused; ns reserved for future use)
 
+-- ⚠️ SEED CAVEAT: this default is written into SBFDB ONCE and the saved table outlives every code
+-- update (the "Captain Taka" typo survived its own fix this way). Changing seeded STRINGS later
+-- needs a migration or a reseed; changing tunable DEFAULTS only affects fresh installs.
 local function cfg()
   SBFDB = SBFDB or {}
   local c = SBFDB.zoneIndicator
@@ -32,11 +35,96 @@ local function cfg()
     }
     SBFDB.zoneIndicator = c
   end
+  -- FIELD-LEVEL defaults (the seed caveat above, learned the hard way): everything below arrived after the
+  -- auras table already existed in saves, so each block must self-seed into an EXISTING config too.
+  -- Vignette watch rows: same row shape as auras, one row per watched map vignette. The surge is a rotating
+  -- zone event whose boss carries a kill VIGNETTE - probed live 2026-09-08: "Looming Mutagenitor"
+  -- vignetteID 7414 is present the whole time the surge is up and gone once it's cleared (the CLW blessing
+  -- then follows). Locale-proof, event-driven, zone-wide. Season rotation = a new row.
+  -- locPattern does DOUBLE duty. The vignette read (C_VignetteInfo.GetVignettes) turns out to be what the
+  -- MINIMAP is tracking, i.e. PROXIMITY-limited - it only sees the boss when you are already near it, which
+  -- is useless for "a surge started while I fish across the zone" (reported 2026-09-13). The zone
+  -- announcement ("... threatens the skies over the Forum") DOES reach the whole zone, so the pattern is now
+  -- a primary TRIGGER as well as the source of the location text. It is localized, so it can't be the only
+  -- signal - the vignette still confirms/holds the state when you're close, and an emote-only trigger
+  -- expires after emoteArmMinutes (an emote has no matching "it ended" message).
+  if not c.vignettes then
+    local old = c.surge           -- interim shape (2026.09.08.1): fold it into the row list
+    c.vignettes = {
+      { vignetteID = 7414, label = "Turn Back the Surge",
+        note = "clear it to curse the waters (Coiled Isle)",
+        emoteArmMinutes = 30,   -- how long an emote-triggered surge stays "up" with no other evidence
+        color = (old and old.color) or { 1.0, 0.55, 0.15 },   -- orange: go fight (vs green: go fish)
+        locPattern = (old and old.emotePattern) or "threatens the skies over",
+        soundOn = true, soundMode = "kit", soundId = 8959 },  -- RAID_WARNING klaxon
+    }
+    c.surge = nil
+  end
+  -- per-row sound fields for rows seeded before sounds existed (public 2026.09.06.2 aura rows)
+  for _, row in ipairs(c.auras or {}) do
+    if row.soundMode == nil then row.soundOn = true; row.soundMode = "kit"; row.soundId = 8960 end  -- READY_CHECK ding
+  end
+  -- stable row IDs + CONTENT TAGS (field-level): id anchors the announce latch and future migrations;
+  -- content = { expansion, season, zone } is what rows are grouped by - grouping is data-driven, so a
+  -- new season's row sorts itself into the right place with no UI work.
+  local MN_S2 = { expansion = "Midnight", season = 2, zone = "The Coiled Isle" }
+  for _, row in ipairs(c.auras or {}) do
+    if row.spellID == 1299580 then row.id = row.id or "clw"; row.content = row.content or MN_S2 end
+  end
+  for _, row in ipairs(c.vignettes or {}) do
+    if row.vignetteID == 7414 then row.id = row.id or "surge"; row.content = row.content or MN_S2 end
+  end
+  -- SEEDED-TEXT MIGRATION (the answer to the seed caveat at the top of this function, and to the "Captain
+  -- Taka" episode: a fixed default never reaches a config that already exists). Bump TEXT_REV whenever a
+  -- seeded label/note changes, and add the corrected strings here keyed by row id; every existing config
+  -- gets rewritten once, then rides the new revision.
+  -- CAVEAT: this OVERWRITES the label/note on a matching row, so the day these become user-editable in the
+  -- UI, each row needs a "user edited this" flag that the migration skips.
+  local TEXT_REV = 2
+  if (c.textRev or 1) < TEXT_REV then
+    local fixes = {
+      -- "Looming Mutagenitor" is the boss vignette we DETECT on, not what the event is called; the client's
+      -- own name for it is the world quest "Turn Back the Surge" (WQ 96995, probed 2026-09-08). And the
+      -- surge blesses nothing - clearing it CURSES the waters (Cursed Land and Waters is the reward state).
+      surge = { label = "Turn Back the Surge", note = "clear it to curse the waters (Coiled Isle)" },
+      pr    = { label = "Patiently Rewarded",  note = "a chest has spawned - claim your reward" },
+    }
+    for _, list in ipairs({ c.auras, c.vignettes }) do
+      for _, row in ipairs(list or {}) do
+        local f = row.id and fixes[row.id]
+        if f then row.label, row.note = f.label, f.note end
+      end
+    end
+    c.textRev = TEXT_REV
+  end
   return c
 end
 
+-- Whether this build runs the zone EVENT rows (the surge) and the per-watch sound + color + Test controls.
+-- false = the aura glow only: green edges and an on-screen announcement while a watched fishing buff is on you.
+function SBF.ZoneWatchesFull()
+  return false
+end
+
+-- the full watch config, for the Settings UI (rows are LIVE references: edits + SBF.ZoneIndicatorRefresh
+-- take effect immediately and persist - they're the SavedVariables tables themselves).
+function SBF.ZoneWatches() return cfg() end
+
+-- play a watch row's configured sound. `force` = the Settings Test/preview click (plays even when the row's
+-- sound is off, so picking a sound always lets you hear it).
+function SBF.PlayZoneWatchSound(row, force)
+  if not row then return end
+  if row.soundOn == false and not force then return end
+  if row.soundMode == "file" and row.soundFile then
+    pcall(PlaySoundFile, row.soundFile, "Master")
+  else
+    pcall(PlaySound, row.soundId or 8959, "Master")
+  end
+end
+
+-- (SBF.PreviewZoneWatch lives below, after the frame/paint machinery it uses.)
+
 local frame, edges, pulseGroup
-local activeSpell = nil        -- spellID currently lighting the glow (nil = hidden)
 
 local function build()
   if frame then return end
@@ -96,41 +184,176 @@ local function paint(color)
   end
 end
 
--- one pass over the watched list -> the first aura that's live on the player wins. pcall-guarded: aura reads
--- near secret values must never error out the indicator.
-local function liveEntry()
-  local c = cfg()
-  if not c.enabled then return nil end
-  for _, row in ipairs(c.auras or {}) do
-    if row.spellID and C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
-      local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, row.spellID)
-      if ok and aura then return row end
-    end
-  end
-  return nil
+-- the Settings Test click: show the row's GLOW for a few seconds (plus its sound, forced), then hand the
+-- screen back to reality via a normal refresh (which repaints the true state or hides). Runs even with the
+-- master off - an explicit test click should always show what the row would look like. Overlapping tests
+-- just restart the timer; the token ignores a stale timer firing after a newer preview began.
+local previewToken = 0
+function SBF.PreviewZoneWatch(row)
+  if not row then return end
+  SBF.PlayZoneWatchSound(row, true)
+  build(); layout(); paint(row.color)
+  frame:Show()
+  previewToken = previewToken + 1
+  local mine = previewToken
+  local secs = (ns.numOrDefault and ns.numOrDefault(cfg().previewSecs, 3)) or 3
+  C_Timer.After(secs, function()
+    -- silent restore: clears the preview without announcing, and works mid-combat (a plain refresh is
+    -- held during combat, which would strand the preview glow on screen until the fight ended)
+    if mine == previewToken and SBF.ZoneIndicatorRefresh then SBF.ZoneIndicatorRefresh(true) end
+  end)
 end
 
-function SBF.ZoneIndicatorRefresh()
-  local row = liveEntry()
-  if row then
-    build(); layout(); paint(row.color)
-    frame:Show()
-    if activeSpell ~= row.spellID then
-      activeSpell = row.spellID
-      -- first sight this session: say WHAT the glow means, loudly once (raid-warning style) + a chat line
-      local msg = (row.label or "Zone buff") .. (row.note and (" - " .. row.note) or "")
-      if RaidNotice_AddMessage and RaidWarningFrame and ChatTypeInfo then
-        pcall(RaidNotice_AddMessage, RaidWarningFrame, msg, ChatTypeInfo["RAID_WARNING"] or { r = 0.3, g = 1, b = 0.5 })
+-- announce helper: raid-warning + chat line in the row's own color, plus the row's configured sound
+local function announce(row, msg)
+  local col = row.color or { 1, 1, 1 }
+  local r, g, b = col[1] or 1, col[2] or 1, col[3] or 1
+  if RaidNotice_AddMessage and RaidWarningFrame and ChatTypeInfo then
+    pcall(RaidNotice_AddMessage, RaidWarningFrame, msg, ChatTypeInfo["RAID_WARNING"] or { r = r, g = g, b = b })
+  end
+  print("|cff45c4a0SBF|r " .. ("|cff%02x%02x%02x"):format(
+    math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5)) .. msg .. "|r")
+  if SBF.ZoneWatchesFull() then SBF.PlayZoneWatchSound(row) end
+end
+
+-- is an aura row's condition live on the player? spellID rows use the direct (secrecy-proof) lookup;
+-- buffName rows (Patiently Rewarded - its identity is a name) match through the tolerant name scan.
+-- pcall-guarded: aura reads near secret values must never error out the indicator.
+local function auraRowUp(row)
+  if row.spellID and C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
+    local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, row.spellID)
+    return ok and aura ~= nil
+  end
+  if row.buffName and row.buffName ~= "" and SBF.GetBuff then
+    local ok, d = pcall(SBF.GetBuff, row.buffName)
+    return ok and d ~= nil
+  end
+  return false
+end
+
+local latch = {}             -- row key -> true while the row's condition is live (rising-edge control)
+local emoteArm = {}          -- row key -> GetTime() expiry, while a zone announcement says this event is up
+local vignetteLoc = nil      -- location parsed from the zone announcement, when the emote was seen
+local paintedRow = nil       -- the row currently painting the edges (for the preview's mid-combat restore)
+local function rowKey(row) return row.id or row.label or tostring(row) end
+-- rows that belong to the same content (expansion+season) are the same CYCLE, which is how an event knows
+-- its own reward: the curse landing ends the surge, while an unrelated proc (Patiently Rewarded, tagged
+-- expansion-wide) must never cancel it.
+local function contentKey(row)
+  local ct = row.content or {}
+  return (ct.expansion or "?") .. "|" .. tostring(ct.season or "")
+end
+
+-- COMBAT HOLD. Reported 2026-09-13: every combat enter/exit re-announced and re-flashed the edges. Cause is
+-- the 12.x aura-name secrecy (see Buffs.lua ScanBuffs: a secret-named aura is NOT keyed by name) plus the
+-- client suppressing map vignettes mid-fight - so a watch that is genuinely, continuously UP reads DOWN
+-- during combat and UP again on exit, which is indistinguishable from a real rising edge. Same doctrine as
+-- learnBuff's combat-boundary guard: NEVER treat "can't read it right now" as "it isn't there". While
+-- combat-flagged we hold everything - no re-reads, no latch moves, no announces, and the glow stays exactly
+-- as it was. On PLAYER_REGEN_ENABLED the latches are still the pre-combat truth, so a watch that was up
+-- before and after produces NO edge (silence, which is the fix), while one that genuinely started during
+-- the fight (you cleared the surge and the curse landed) is still a real edge and announces then.
+local function combatHeld()
+  local c = cfg()
+  if c.combatHold == false then return false end                  -- tunable escape hatch
+  return (UnitAffectingCombat and UnitAffectingCombat("player")) and true or false
+end
+
+-- `silent` = compute and paint but never announce or move latches. Used by the Test preview's restore,
+-- which must be able to clear the preview even mid-combat.
+function SBF.ZoneIndicatorRefresh(silent)
+  local c = cfg()
+  local enabled = c.enabled
+  local full = SBF.ZoneWatchesFull()
+  if combatHeld() and not silent then return end
+  local paintRow = nil
+  local rewardUp = {}          -- content key -> an aura row for that cycle is live right now
+  -- one vignette scan shared by every vignette row
+  local present = {}
+  if full and enabled and C_VignetteInfo and C_VignetteInfo.GetVignettes then
+    local ok, guids = pcall(C_VignetteInfo.GetVignettes)
+    if ok then
+      for _, guid in ipairs(guids or {}) do
+        local ok2, info = pcall(C_VignetteInfo.GetVignetteInfo, guid)
+        if ok2 and info and info.vignetteID then present[info.vignetteID] = true end
       end
-      print("|cff45c4a0SBF|r |cff40ff70" .. msg .. "|r")
     end
-  else
-    activeSpell = nil
-    if frame then pulseGroup:Stop(); frame:Hide() end
+  end
+  -- EVERY row gets its own rising-edge announce, even when another row wins the paint: Patiently Rewarded
+  -- landing mid-blessing must still ding + tell you, even though the edges stay green. Falling edges are
+  -- deliberately SILENT everywhere (leaving an area / a vignette visibility hiccup must not false-positive).
+  -- Paint priority: aura rows (a state ON you) beat vignette rows (an event somewhere in the zone), each
+  -- list in seed order.
+  for _, row in ipairs(c.auras or {}) do
+    local up = (enabled and row.enabled ~= false and auraRowUp(row)) or false
+    local k = rowKey(row)
+    if up and not latch[k] and not silent then
+      announce(row, (row.label or "Zone buff") .. (row.note and (" - " .. row.note) or ""))
+    end
+    if not silent then latch[k] = up or nil end
+    if up then
+      rewardUp[contentKey(row)] = true     -- this cycle's reward state is live
+      if not paintRow then paintRow = row end
+    end
+  end
+  local anyVig = false
+  for _, row in ipairs(full and c.vignettes or {}) do
+    local k = rowKey(row)
+    -- this cycle's reward aura being up means the event is DONE (you cleared the surge and the curse
+    -- landed), so a stale emote arm is dropped rather than left to time out.
+    if emoteArm[k] and rewardUp[contentKey(row)] then emoteArm[k] = nil end
+    if emoteArm[k] and GetTime() >= emoteArm[k] then emoteArm[k] = nil end
+    local seen = (row.vignetteID and present[row.vignetteID]) or false
+    local up = (enabled and row.enabled ~= false and (seen or (emoteArm[k] and true or false))) or false
+    if up and not latch[k] and not silent then
+      announce(row, (row.label or "Zone event")
+        .. (vignetteLoc and (" (" .. vignetteLoc .. ")") or "")
+        .. (row.note and (" - " .. row.note) or ""))
+    end
+    if not silent then latch[k] = up or nil end
+    if up then anyVig = true; if not paintRow then paintRow = row end end
+  end
+  if not anyVig and not silent then vignetteLoc = nil end
+  -- a silent restore that lands mid-combat must not let an unreadable state blank a glow that is really
+  -- still up: keep painting whatever was painted when the hold began.
+  if silent and combatHeld() then paintRow = paintedRow end
+  paintedRow = paintRow
+  if paintRow then
+    build(); layout(); paint(paintRow.color)
+    frame:Show()
+  elseif frame then
+    pulseGroup:Stop(); frame:Hide()
   end
 end
 
 local ev = CreateFrame("Frame")
 ev:RegisterUnitEvent("UNIT_AURA", "player")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
-ev:SetScript("OnEvent", function() SBF.ZoneIndicatorRefresh() end)
+ev:RegisterEvent("VIGNETTES_UPDATED")
+ev:RegisterEvent("CHAT_MSG_RAID_BOSS_EMOTE")
+ev:RegisterEvent("PLAYER_REGEN_ENABLED")   -- combat ended: re-read once, now that the reads are trustworthy
+ev:SetScript("OnEvent", function(_, event, msg)
+  if event == "CHAT_MSG_RAID_BOSS_EMOTE" and SBF.ZoneWatchesFull() then
+    -- PRIMARY trigger + location harvest. The announcement reaches the whole zone, unlike the proximity-
+    -- limited vignette read, so a match ARMS the row (that is what makes "a surge started while I'm fishing
+    -- across the zone" work at all) and also yields the location text for the announce.
+    if type(msg) == "string" then
+      for _, row in ipairs(cfg().vignettes or {}) do
+        local pat = row.locPattern
+        if pat and pat ~= "" and msg:find(pat, 1, true) then
+          vignetteLoc = msg:match(pat .. "%s+(.-)[%.!]?$")
+          local mins = tonumber(row.emoteArmMinutes) or 30
+          emoteArm[rowKey(row)] = GetTime() + mins * 60
+          break
+        end
+      end
+    end
+  end
+  if event == "PLAYER_REGEN_ENABLED" then
+    -- next frame: UnitAffectingCombat can still read true on this one, which would hit the combat hold
+    -- and skip the very re-read this event exists to trigger.
+    C_Timer.After(0, function() SBF.ZoneIndicatorRefresh() end)
+    return
+  end
+  SBF.ZoneIndicatorRefresh()
+end)

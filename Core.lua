@@ -4,6 +4,11 @@
 -- keys itself — you press the combo (one key), and the secure button fires the
 -- item/macro. That's why combos (CTRL/ALT/SHIFT) matter.
 local ADDON, ns = ...
+-- Forever (interface 16001) ships the modern API WITHOUT the deprecated item globals; alias them to C_Item
+-- file-locally (never write _G, so other addons' own version checks are untouched). Retail: unchanged.
+local GetItemInfo = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+local GetItemInfoInstant = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
+local GetItemCount = GetItemCount or (C_Item and C_Item.GetItemCount)
 SBF = SBF or {}
 
 -- BUILD STAMP — the SINGLE source of truth is the `## Version` in SBF.toc (the canonical delivery key the
@@ -91,6 +96,12 @@ local DB_DEFAULTS = {
                         -- (runtime field SBFDB._lastTiers is set in code, not defaulted here)
   swapFlash = true,     -- flash the swapped-in profile's name as a raid-warning on an auto-swap
   autoDismount = false, -- on a GROUND mount, fire /dismount so you can fish (never while flying)
+  -- Observation lane (see learnBuff): keep watching what a CATALOGUED item's buff actually is, once per
+  -- item per session, purely as evidence. Never changes what the engine watches (the catalog owns that) —
+  -- it fills the per-item record that rides to the server, so a wrong shipped fact can be contradicted by
+  -- data instead of only by a player bug report. Set false to stop contributing observations.
+  observeCatalogued = true,
+  observeMaxTries = 3,       -- attempts per item per session before giving up (the aura may never land)
   requireTwoButtons = false, -- two-button mode: the action key only casts; loot via the loot key.
                              -- Choosing it also IMPLIES the game's "Enable interact key" option stays on
                              -- (EnsureInteractKeyCVar) - looting rides that option, no separate toggle.
@@ -188,6 +199,10 @@ local DB_DEFAULTS = {
                         -- kept modest so the columnar list stays smooth — editable ("show") on the Log tab
   logSearchMode = "highlight",  -- Log-tab search mode: "highlight" (tint + next/prev jump) | "filter" (show only matches)
   statsRefresh = "live",-- Stats-tab auto-refresh: "live" (redraw on each logged event) | 1/2/5 (timer secs) | "off" (manual)
+  reachSound = true,    -- play a sound once when the bobber lands beyond the interact key's reach (Reach.lua)
+  reachSoundMode = "kit",
+  reachSoundId = 8959,
+  reachSoundFile = "",
   noFishSound = false,  -- play a sound when a cast ends with no fish hooked (optional warning)
   noFishSoundMode = "kit",
   noFishSoundId = 8959, -- SoundKit id (kit mode); 8959 = RAID_WARNING
@@ -253,7 +268,7 @@ end
 
 ------------------------------------------------------------- secure buttons ---
 local buttons = {}         -- key -> SecureActionButton
-SBF._buttons = buttons     -- expose the registry (read-only ref) so Dev.lua can dump live macrotext
+SBF._buttons = buttons     -- read-only reference to the button registry
 local bindOwner = CreateFrame("Frame")   -- owns the override bindings
 local GECBind = LibStub:GetLibrary("GECBind-1.0")   -- shared keybind lib (owns the secure click-edge handling)
 local GECLoot = LibStub:GetLibrary("GECLoot-1.0", true)   -- shared fast-loot lib (optional: nil-safe if not embedded)
@@ -355,7 +370,7 @@ end
 -- so the normal output is silence, and silence is the assertion that the checks are holding.
 --
 -- The recorder itself SHIPS because the detections live on shipping paths (the cast classifier, the reel gate)
--- and must not become nil there. Everything that surfaces or reads it back is dev-only and stripped below.
+-- and must not become nil there.
 local ANOMALY_KEEP = 50
 function SBF.Anomaly(tag, fmt, ...)
   local msg = select("#", ...) > 0 and string.format(fmt, ...) or fmt
@@ -368,10 +383,8 @@ function SBF.Anomaly(tag, fmt, ...)
   return SBF._anomalyCount[tag]
 end
 
--- ONE output funnel for diagnostics. In a dev build every line lands in the GEC-Console **Feed** tab, where it
--- is copyable and can't scroll away behind loot spam; a shipped build (Feed hand-off stripped) falls back to
--- chat. RULE going forward: ANY new trace/diagnostic text goes through SBF.Emit, never a bare print(), so
--- there is exactly one place that decides where output lands.
+-- ONE output funnel for diagnostics. RULE: ANY trace/diagnostic text goes through SBF.Emit, never a bare print(),
+-- so there is exactly one place that decides where output lands.
 function SBF.Emit(msg)
   print(msg)
 end
@@ -382,7 +395,7 @@ end
 -- flag SBFDB.buffDebug so it can run ALONE (no other debug noise), and it also rides SBFDB.debug so a general
 -- debug session still sees it. Every learn, mount-reject, and already-known hit prints — the source tag marks
 -- whether a KNOWN value was learned live or hard-coded (a future shipped seed reads source="seed"). Toggle it
--- with /sbf buffdebug (or the GEC-Console button). Kept in one place so it's easy to keep an eye on.
+-- with SBFDB.buffDebug. Kept in one place so it's easy to keep an eye on.
 local function bdbg(fmt, ...)
   if not (SBFDB and (SBFDB.buffDebug or SBFDB.debug)) then return end
   print("|cff88ccffSBF buff|r " .. string.format(fmt, ...))
@@ -403,6 +416,11 @@ end
 -- caller carries no per-slot guard, so nothing has to be rewired per slot. A fireAll slot (Buffs) tracks each
 -- item's buff SEPARATELY, so learning is PER-ITEM: gate on the pinned item's own learned record, not the
 -- slot-level cdef.buff (which one item would set, blocking the rest).
+-- itemID -> attempt count, or "done" once an observation landed. SESSION-scoped on purpose (a plain local,
+-- never saved): re-observing each login is exactly the point — it is how a catalog fact earns continued
+-- trust, and how a value that changed in a patch gets contradicted.
+local observeTries = {}
+
 local function learnBuff(slotKey, cdef, deadline)
   if not cdef then return end
   -- PIN the item we're learning FOR at CALL time. The aura that lands is from THIS item's cast; a
@@ -439,15 +457,32 @@ local function learnBuff(slotKey, cdef, deadline)
       return r and ((r.buffSpell and r.buffSpell ~= 0) or (r.buff and r.buff ~= "")) and true or false end
     return ((cdef.buffSpell and cdef.buffSpell ~= 0) or (cdef.buff and cdef.buff ~= "")) and true or false
   end
+  -- OBSERVATION LANE. A catalogued item takes its identity from the shipped catalog (seedItemBuff returns
+  -- before the learned cache is ever read), so `alreadyLearned()` was true on the very first fire and this
+  -- function early-returned — meaning we recorded NOTHING about the items we most need evidence for. Proven
+  -- on the server 2026-09-16: Toxic Tlhapi and friends arrive with maps/slots but no buff, no buffSpell, no
+  -- duration, so `learned_sightings` (the curation evidence table) holds empty knowledge for every
+  -- catalogued item and a wrong shipped value can never be contradicted by data.
+  -- So: the catalog stays authoritative for BEHAVIOUR (nothing below touches cdef.*), but we still watch the
+  -- aura land ONCE PER ITEM PER SESSION and write what we actually saw into the item's learned record, which
+  -- is what rides to the server. A disagreement then shows up as its own sighting row instead of silence.
+  local observeOnly = false
   if alreadyLearned() then
-    if SBFDB and (SBFDB.buffDebug or SBFDB.debug) then   -- report WHAT is already known + its source (learned vs hard-coded)
-      local rec = atIid and SBF.ItemKnow(atIid)
-      local src = (rec and rec.source) or "?"
-      local tag = (src == "seed" or src == "builtin") and "  |cff80ff80(hard-coded)|r" or ("  |cff808080(" .. src .. ")|r")
-      bdbg("known %s item=%s buff=|cffffd100%s|r%s", slotKey, tostring(atIid),
-        tostring((rec and rec.buff) or cdef.buff or "?"), tag)
+    local tries = atIid and observeTries[atIid]
+    local due = atIid and SBFDB and SBFDB.observeCatalogued ~= false
+      and tries ~= "done" and (tries or 0) < (SBFDB.observeMaxTries or 3)
+    if not due then
+      if SBFDB and (SBFDB.buffDebug or SBFDB.debug) then   -- report WHAT is already known + its source (learned vs hard-coded)
+        local rec = atIid and SBF.ItemKnow(atIid)
+        local src = (rec and rec.source) or "?"
+        local tag = (src == "seed" or src == "builtin") and "  |cff80ff80(hard-coded)|r" or ("  |cff808080(" .. src .. ")|r")
+        bdbg("known %s item=%s buff=|cffffd100%s|r%s", slotKey, tostring(atIid),
+          tostring((rec and rec.buff) or cdef.buff or "?"), tag)
+      end
+      return   -- nothing to learn AND nothing left to observe — cheap early-out (no ScanBuffs snapshot)
     end
-    return   -- nothing new for this pick — cheap early-out (no ScanBuffs snapshot)
+    observeOnly = true
+    observeTries[atIid] = (tries or 0) + 1   -- capped so an aura that never lands can't poll every fire
   end
   local before = expiryMap()
   -- COMBAT BOUNDARY GUARD: in 12.x combat an aura's NAME goes secret, and a secret-named aura is NOT keyed
@@ -458,7 +493,9 @@ local function learnBuff(slotKey, cdef, deadline)
   -- change: re-baseline and keep polling instead.
   local beforeCombat = (UnitAffectingCombat and UnitAffectingCombat("player")) or false
   local function poll()
-    if not cdef or alreadyLearned() then return end
+    -- in observe-only mode alreadyLearned() is true BY DEFINITION (the catalog seeded it), so the usual
+    -- "stop, someone else learned it" guard would abort the observation before it began.
+    if not cdef or (not observeOnly and alreadyLearned()) then return end
     local nowCombat = (UnitAffectingCombat and UnitAffectingCombat("player")) or false
     if nowCombat ~= beforeCombat then
       before, beforeCombat = expiryMap(), nowCombat
@@ -500,7 +537,9 @@ local function learnBuff(slotKey, cdef, deadline)
           bdbg("reject |cffff6060%s|r (spell %s) for %s: |cffff6060no duration (permanent aura)|r",
             name, tostring(spellId), slotKey)
         else
-          if not fireAll then            -- fireAll uses PER-ITEM buffs (entryBuffName), never a slot-level one
+          -- observe-only: the CATALOG owns this item's identity, so never write the slot-level buff here.
+          -- We are recording evidence, not changing what the engine watches.
+          if not fireAll and not observeOnly then   -- fireAll uses PER-ITEM buffs (entryBuffName), never a slot-level one
             cdef.buff = name             -- display name (localised; can go secret in combat)
             cdef.buffSpell = spellId     -- IDENTITY: survives rename + secret-name; the preferred match key
             cdef.buffFor = atKey         -- the item (pinned at call time) this buff was learned for
@@ -532,8 +571,21 @@ local function learnBuff(slotKey, cdef, deadline)
               end
             end
           end
-          bdbg("|cff80ff80LEARNED|r %s -> |cffffd100%s|r (spell %s, dur %s) item=%s", slotKey, name,
-            tostring(spellId), tostring((d and d.duration) or "?"), tostring(atIid))
+          if observeOnly then
+            observeTries[atIid] = "done"        -- one good look is enough for this session
+            -- Say so loudly in the buff channel when what we SAW disagrees with what we SHIP: that is the
+            -- whole reason this lane exists, and it is the signal the server-side mismatch flag will read.
+            local ck = ns.CatalogKnow and ns.CatalogKnow(atIid)
+            local mismatch = ck and ((ck.buffSpell and spellId and ck.buffSpell ~= spellId)
+              or (not ck.buffSpell and ck.buff and ck.buff ~= "" and ck.buff ~= name))
+            bdbg("%s %s -> |cffffd100%s|r (spell %s, dur %s) item=%s%s",
+              mismatch and "|cffff6060OBSERVED (DISAGREES WITH CATALOG)|r" or "|cff80c0ffOBSERVED|r",
+              slotKey, name, tostring(spellId), tostring((d and d.duration) or "?"), tostring(atIid),
+              mismatch and (" |cffff6060catalog says \"" .. tostring(ck.buff) .. "\"(" .. tostring(ck.buffSpell) .. ")|r") or "")
+          else
+            bdbg("|cff80ff80LEARNED|r %s -> |cffffd100%s|r (spell %s, dur %s) item=%s", slotKey, name,
+              tostring(spellId), tostring((d and d.duration) or "?"), tostring(atIid))
+          end
           return
         end
       end
@@ -611,8 +663,15 @@ end
 -- and .lines[lineID] is nil when the char has no skill in that line. The MODIFIER (green +gear/lure boost) is
 -- SBF-owned and gear-derived — the library doesn't carry it — so SBF reads it live and only when the data is
 -- warm (0 otherwise; the full gear-derived boost catalog is future work, [[sbf-effective-fishing-skill]]).
+-- WoW: Forever / Classic have ONE Fishing skill on the old base line 356 (probed 2026-09-23: 356 = "Fishing 75/75",
+-- the per-expansion lines 2592/2591/... answer 0/0), so SBF.FishingLine() is 356 there and the zone's expansion line
+-- on retail. The header readout, the {sbf.fishing} data token and the Skill Book all read it through here.
+function SBF.FishingLine()
+  if SBF.CLASSIC_GEAR then return SBF.FISHING_LINE.base end
+  return zoneFishingLine() or SBF.FISHING_LINE.midnight          -- unmapped continent -> current-expansion line
+end
 function SBF.FishingSkill()
-  local line = zoneFishingLine() or SBF.FISHING_LINE.midnight   -- unmapped continent -> current-expansion line
+  local line = SBF.FishingLine()
   local S = gecStore()
   if not (line and S and S.CharInfo and S.CharIndex) then return nil end
   local ch = S.CharInfo(S.CharIndex())
@@ -659,6 +718,11 @@ function SBF.SkillBookFor(charIdx)
   local idx = charIdx or S.CharIndex()
   local ch = idx and S.CharInfo(idx)
   local lines = ch and ch.state and ch.state.professions and ch.state.professions.lines
+  if SBF.CLASSIC_GEAR then                                       -- Forever / Classic: one Fishing skill, one row
+    local line = SBF.FISHING_LINE.base
+    local l = lines and lines[line]
+    return { { label = "Fishing", line = line, level = l and l.level, max = l and l.max, has = l ~= nil, current = true } }
+  end
   local curLine = zoneFishingLine()
   local out = {}
   for _, e in ipairs(SBF.SKILLBOOK_ORDER) do
@@ -787,13 +851,9 @@ SBF.BreathLeft = breathSecondsLeft
 
 -- Macro-line builders (actionLine / guardNoCombat / guardCombat / combatLine), the firing-mode resolver,
 -- describeAction, and buildPressMacro all live in Slots.lua; Core aliases the few PreClick calls here.
--- ⚠️ SHIPPING CODE — MUST stay OUTSIDE the @strip block below. These are called by BARE NAME from PreClick;
--- a strip once swallowed this block (it was parked between two dev dumps) and every fishing press crashed
--- with "attempt to call a nil value" in the PUBLIC build (dev + luacheck can't see it). Keep it out here.
 local combatLine = ns.combatLine
 local guardCombat, describeAction = ns.guardCombat, ns.describeAction
 local buildPressMacro = ns.buildPressMacro
--- (actionLine is aliased inside the dev @strip block below — it's used only by the diagnostic dumps.)
 
 -- Chat a one-line note of what an action-key press fired (Debug-log only; no-op presses stay quiet).
 local function announce(txt)
@@ -845,7 +905,7 @@ local function journalSpellName()
   end
   return fallback
 end
-SBF._JournalSpellName = journalSpellName   -- exposed so the GEC-Console probe can confirm what it resolves to
+SBF._JournalSpellName = journalSpellName   -- read-only: what the Fishing Journal spell name resolves to
 
 local function shouldFlashJournal()
   if not SBFDB or SBFDB.refreshSkillOnCast == false then return false end   -- default ON; opt-out
@@ -1196,14 +1256,22 @@ local function DesiredOverride()
     return "JUMP", "bounce"
   end
   if UnitChannelInfo and UnitChannelInfo("player") and not hasAction(s.interact)
-    and not SBFDB.requireTwoButtons then                  -- two-button mode: action key doesn't loot
+    and not SBFDB.requireTwoButtons then                   -- two-button mode: action key doesn't loot
+    if SBF.BobberOutOfReach and SBF.BobberOutOfReach() then   -- the key can't reach this bobber
+      if SBF.REACH_MOUSEOVER and SBF.REACH_MOUSEOVER[SBF.ReachMode()] then return "INTERACTMOUSEOVER", "reachMouseover" end
+      return nil, "reachRecast"                                -- no override: the press runs the loop and recasts
+    end
     return ((s.interact and s.interact.gameBinding) or "INTERACTTARGET"), "interact"
   end
   return nil, "idle"
 end
+-- (Bobber reach: out-of-reach detection, the mouseover/recast/search modes and the interact-key switch live in
+-- Reach.lua; DesiredOverride and UpdateFishKey below call into it.)
+
 local prevFalling = false   -- for the swimming->falling RISING edge (the physical jump landing)
 local function UpdateFishKey()
   if InCombatLockdown() then return end
+  if SBF.UpdateReachInteractKeys then SBF.UpdateReachInteractKeys() end   -- interact keys -> mouseover while out of reach (Reach.lua)
   local keys = SBF.BindsFor("fishing")   -- Key1/Key2/Controller — override ALL of them while the line is out
   if #keys == 0 then JumpController.Clear(); prevFalling = false; return end
   -- JUMPING IS ACTIVITY. A jump press fires the binding, NOT the secure button, so it never runs PreClick and
@@ -1230,16 +1298,13 @@ local function UpdateFishKey()
       tostring(IsFlying and IsFlying()), tostring(ns.zenBoatDue and ns.zenBoatDue(bt)),
       tostring(fallingBoatActive(bt)), tostring((SBF._zenArm and GetTime() < SBF._zenArm) or false)))
   end
-  if SBF._tracing and SBF.Trace then                       -- per-poll trace to the GEC-Console Feed tab
+  if SBF._tracing and SBF.Trace then                       -- per-poll trace (diagnostics)
     SBF.Trace((changed and "*" or " ") .. tostring(reason or "-"))   -- * = the override changed this tick
   end
 end
 
 
--- Set a button's macrotext AND (dev) echo the FINAL wrapped macro to the GEC-Console Feed — so pressing the
--- fishing key prints a live transcript of exactly what got overlaid THIS press (combat guardCombat wrap and
--- all), which a static GetAttribute dump can't show. Toggle with /sbf macrotrace. The echo is @strip'd out of
--- public and gated on SBF._macroTrace; btn:SetAttribute is the shipping behaviour.
+-- Set a button's macrotext: the one place every press writes its macro.
 local function applyMacro(btn, text, tag)
   btn:SetAttribute("macrotext", text)
 end
@@ -1474,7 +1539,7 @@ local function fishSessionCtrl()
 end
 SBF.Session = fishSessionCtrl
 
--- Manual "New session" (the GEC-Console button, /run SBF.NewSession()). SBF owns NONE of the lifecycle
+-- Manual "New session" (/run SBF.NewSession()). SBF owns NONE of the lifecycle
 -- logic — it just asks the controller to cycle: the library closes the open session (stop marker + frozen
 -- record) and begins a fresh one (new sid + start marker) in one atomic call, so the stop always precedes
 -- the start. Prices are {} (SBF doesn't value catches until increment 3). Refreshes the Log/Stats so the new
@@ -1825,12 +1890,15 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
       SBF._logCaughtItems = {}            -- fresh per-cast loot accumulator (so a multi-item catch keeps ALL items)
       SBF._fishLootSeen = false           -- per-cast: set true only when a source-confirmed FISHING window opens
       SBF._chanMoved, SBF._chanCombat = false, false   -- per-cast interrupt-cause flags, set by the movement/combat events below
+      SBF._chanUnreachable = false                     -- per-cast: recast mode ended this cast because the bobber was out of reach
+      SBF._chanOOR = false                             -- per-cast: the bobber went out of the key's reach (any mode; Stats metric)
       resetReelWatch()                    -- per-cast reel gate: `nothing` requires a reel-in was actually performed
       -- persist the in-flight cast so a /reload mid-channel doesn't lose the reference: GetTime() is
       -- continuous across /reload, so the stored start stays valid; re-linked at login (PEW below).
       SBFDB._inflight = { start = SBF._logCast, exp = SBF._logCastExp, t = time() }
     else
       SBF._logCast, SBF._logCastExp = nil, nil
+      SBF._faceViewDone = nil                                 -- face-forward camera re-aims on the NEXT cast press
     end
   elseif ev == "LOOT_OPENED" then
     SBF._logCaughtT = GetTime()            -- a loot window opened during/after the cast = a real catch signal
@@ -1902,6 +1970,7 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
       -- line, so a frozen copy is always false and the veto is dead in every case. That is a worse bug than
       -- the recast race the freeze was meant to fix. It is read live at the verdict instead, attributed by
       -- cast identity. Two signals, two lifetimes: do not treat them as one class again.
+      local oorCast, unreachCast = SBF._chanOOR, SBF._chanUnreachable   -- frozen at the stop like `reeled` (a recast zeroes them)
       local reeled = SBF._chanReeled           -- true = reel press seen · false = provably none · nil = keys unreadable
       -- FREEZE THE REASON TOO. The block above says every per-cast input the verdict reads must be frozen at
       -- the stop, and this one was not: the verdict runs 0.8s late, resetReelWatch() nils _reelBlindWhy on the
@@ -1987,6 +2056,12 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
         -- took the cast" beats "you didn't press the reel key", which is true but tells you less.
         elseif kind == "interrupt" then extra = { cause = cause or (combat and "combat") or (otherLoot and "looted") or (reeled == false and "canceled") or "unattributed", exp = castExp }
         elseif kind == "expired" or kind == "nothing" then extra = { exp = castExp } end   -- stamp exp so the row shows dur/exp
+        -- OUT OF REACH (Reach.lua). A cast that recast mode ended because the key couldn't reach the bobber gets its
+        -- OWN kind, "unreachable": it never had a fair chance, so it stays out of the cast/catch-rate math (Stats
+        -- only sums caught/expired/nothing/missed/interrupt). Every out-of-reach cast, whatever it ended as (reeled
+        -- by pointing at it, recast...), carries oor=true for the "out of reach" metric.
+        if unreachCast and kind ~= "caught" and kind ~= "missed" then kind, extra = "unreachable", { exp = castExp } end
+        if oorCast then extra = extra or {}; extra.oor = true end
         -- THE CANARY, now self-reporting. "unattributed" is unreachable by construction (classifycast_test locks
         -- it), so if it ever lands in a real log the invariant broke — some path reached "interrupt" without a
         -- cause. Don't make it wait to be spotted by eye in the Stats breakdown weeks later.
@@ -2015,8 +2090,6 @@ end)
 -- Cast Fishing lives in WoW's own Key Bindings as the command below (declared in Bindings.xml). The native
 -- binding is the SINGLE SOURCE OF TRUTH: SBF's own UI, WoW's Key Bindings menu, and ConsolePort all read /
 -- write the SAME binding, so they can never disagree. (Interact/Loot likewise uses the native INTERACTTARGET.)
--- The dev-only per-slot/gear keybinds still ride SBF's internal override store (SBFDB.binds*) — those aren't
--- exposed to the native menu on purpose.
 -- All native-binding mechanics (key inspection, conflict prompt, the capture widget) live in the shared
 -- GECBind-1.0 lib so SBF, Haul, and any future addon behave identically. Core uses it for the fishing
 -- key-set + the migration; Options/Welcome use its capture widget. (GECBind is declared once up in the secure
@@ -2294,6 +2367,8 @@ function SBF.Apply()
       -- music/ambience). Parallel to gear — applied on a press, restored on idle/stop/login. No-op unless
       -- enabled + not already applied. CVars aren't protected, so this is safe and needs no [combat] dance.
       if SBF.ApplyFocusAudio then SBF.ApplyFocusAudio() end
+      if SBF.ApplyBobberReach then SBF.ApplyBobberReach() end   -- interact key reaches far bobbers (restored on stop)
+      if SBF.ApplyFishingZoom then SBF.ApplyFishingZoom() end   -- camera out far enough to see the bobber (restored on stop)
 
       -- Empty pole slot: fill it from the pole you're wearing BEFORE the gear gate reads it. This has to sit
       -- here and not inside applyProfileGear, because that function is only ever reached THROUGH the gate, and
@@ -2323,6 +2398,13 @@ function SBF.Apply()
       -- Belt-and-suspenders for the ~0.15s override-poll lag (the dynamic override suppresses
       -- the key the rest of the time). Loot-while-channeling is handled by the INTERACT override.
       local fa = ns.FishingAction and ns.FishingAction()
+      if fa == "recast" then            -- bobber beyond the interact key's reach: stop this line, cast a new one
+        announce("recasting (bobber out of reach)")
+        self:SetAttribute("type", "macro")
+        self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
+        applyMacro(self, "/stopcasting\n/cast " .. ((ns.fishingSpellName and ns.fishingSpellName()) or "Fishing"), "reach-recast")
+        return
+      end
       if fa == "dismount" then          -- ground mount + auto-dismount on: dismount; next press fishes
         announce("dismounting")
         self:SetAttribute("type", "macro")
@@ -3502,6 +3584,12 @@ end
 function ns.FishingAction()
   local s = ns.ReadState()
   if s.channeling then
+    -- Out-of-reach bobber in recast mode (Reach.lua): the press drops this line and casts a new one, in one- AND
+    -- two-button setups. Before this the two-button "inert while the line is out" rule below swallowed the press, so
+    -- recast mode just sat there (seen live 2026-09-23).
+    if SBF.ReachMode and SBF.ReachMode() == "recast" and SBF.BobberOutOfReach and SBF.BobberOutOfReach() then
+      return "recast", s
+    end
     if SBFDB.requireTwoButtons then return "wait", s end   -- two-button mode: action key inert while looting
     return "loot", s
   end
@@ -3547,16 +3635,11 @@ function ns.FishingAction()
 end
 
 
--- (SBF's dev console + its capture helper were removed — the standalone GEC-Console addon replaces them.
---  The /sbf slash handler below stays; its diagnostics are now buttons in GEC-Console's Commands.lua.)
 
 
--- PUBLIC REPAIR for removing the switches above. These used to be settable via a shipped /sbf jump, so a
--- user may be carrying a non-default value in SavedVariables — and once the command is stripped they have no
--- way to put it back. Silently leaving a stale tuning value that changes loot/jump behaviour, with no UI and
--- no command to inspect it, is exactly the "trapped on the machine" failure the repair doctrine forbids. So
--- the public build resets them to shipped defaults once, records what it changed, and moves on. Dev builds
--- keep whatever they set (the command still exists there to change it back).
+-- ONE-TIME REPAIR. These switches used to be settable via /sbf jump, so a user may be carrying a non-default
+-- value in SavedVariables with no way to see or change it. Reset them to the defaults once, record what
+-- changed, and move on.
 -- The defaults are inline so this stands alone in a build where the switch machinery does not exist.
 local JUMP_DEFAULTS = { jumpKeyState = true, ascentBreaker = true, bounceJump = true,
                         bounceBreakWithBuff = false, surfaceClimbJump = false,
@@ -3587,10 +3670,35 @@ SlashCmdList.SBF = function(msg)
   if cmd == "welcome" then
     if SBF.ShowWelcome then SBF.ShowWelcome() end
   elseif cmd == "bug" or cmd == "bugreport" then              -- PUBLIC: copyable, PII-free diagnostic blob.
-    -- MUST live outside every @strip block: this is the ONLY slash route a shipped user has to a report,
-    -- and it was accidentally authored inside the dev block, so the public build had no /sbf bug at all.
     -- `rest` is already everything after the command word: the reporter's description, included verbatim.
     if SBF.ShowBugReport then SBF.ShowBugReport(rest ~= "" and rest or nil) end
+  elseif cmd == "reach" then                                  -- PUBLIC: interact-key range while fishing
+    local v = rest:lower()
+    if v == "off" then SBFDB.bobberReach = 0
+    elseif v == "default" or v == "" then SBFDB.bobberReach = nil
+    elseif tonumber(v) then SBFDB.bobberReach = math.max(0, math.floor(tonumber(v))) end
+    print(("|cff45c4a0SBF bobber reach|r: %s  |cff808080(/sbf reach <yards> | off | default)|r"):format(
+      (SBFDB.bobberReach == nil and "default (60 on Forever/Classic, off on retail)")
+      or (SBFDB.bobberReach == 0 and "off - your interact range is left alone") or (SBFDB.bobberReach .. " yards while fishing")))
+  elseif cmd == "reachzoom" then                              -- PUBLIC: minimum camera distance while fishing
+    local v = rest:lower()
+    if v == "off" then SBFDB.reachZoom = 0
+    elseif v == "default" or v == "" then SBFDB.reachZoom = nil
+    elseif tonumber(v) then SBFDB.reachZoom = math.max(0, tonumber(v)) end
+    print(("|cff45c4a0SBF fishing zoom|r: %s  |cff808080(/sbf reachzoom <distance> | off | default)|r"):format(
+      (SBF.ReachZoom and SBF.ReachZoom() or 0) > 0 and ("at least " .. SBF.ReachZoom() .. " while fishing") or "off"))
+  elseif cmd == "reachview" then                              -- PUBLIC: face-forward camera on/off + which view slot
+    local v = rest:lower()
+    if v == "on" then SBFDB.reachFaceView = true
+    elseif v == "off" then SBFDB.reachFaceView = nil
+    elseif tonumber(v) and tonumber(v) >= 2 and tonumber(v) <= 5 then SBFDB.reachViewSlot = tonumber(v); SBFDB.reachFaceView = true end
+    print(("|cff45c4a0SBF face-forward camera|r: %s (view %d)  |cff808080(/sbf reachview on | off | <2-5>)|r"):format(
+      SBFDB.reachFaceView and "|cff33ff33ON|r" or "|cff808080OFF|r", tonumber(SBFDB.reachViewSlot) or 5))
+  elseif cmd == "reachmode" then                              -- PUBLIC: what the key does for an out-of-reach bobber
+    if SBF.REACH_MODES and SBF.REACH_MODES[rest] then SBFDB.reachMode = rest
+    elseif rest == "default" then SBFDB.reachMode = nil end
+    print(("|cff45c4a0SBF out-of-reach bobber|r: |cffffd100%s|r%s  |cff808080(/sbf reachmode recast | mouseover | off | default)|r"):format(
+      SBF.ReachMode(), SBFDB.reachMode == nil and " (default)" or ""))
   elseif cmd == "addtarget" or cmd == "tgt" then              -- PUBLIC: opt-in /targetenemy in OUR default combat macro
     if rest == "on" then SBFDB.combatTarget = true            -- opt-in: add /targetenemy to the default macro
     elseif rest == "off" then SBFDB.combatTarget = nil        -- default: no target line (auto-target)

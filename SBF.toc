@@ -1,9 +1,9 @@
-## Interface: 120100
+## Interface: 120100, 16001
 ## Title: Single-Button Fishing
 ## Notes: One key runs the whole fishing loop. Keybound item/macro slots (food, drink, lure, boat, cast, interact), built for combo keys (modifier combos supported).
 ## Category: GEC
 ## Author: Goblin Engineering Company
-## Version: 2026.09.06.2
+## Version: 2026.09.29.1
 ## X-GEC-Channel: public
 ## X-WoWI-ID: 27173
 ## X-Curse-Project-ID: 1625876
@@ -36,6 +36,7 @@ Profiles.lua
 Gear.lua
 Gather.lua
 Core.lua
+Reach.lua
 Stats.lua
 Feed.lua
 Help.lua

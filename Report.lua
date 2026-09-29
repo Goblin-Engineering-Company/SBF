@@ -1,6 +1,6 @@
 -- Report.lua — the in-game BUG REPORT blob.
 --
--- This SHIPS (it is not dev-only): the whole point is that a public user hits a problem, clicks one button,
+-- The whole point is that a public user hits a problem, clicks one button,
 -- and pastes a block of text that tells us enough to reproduce it. Every bug this session — the chum that
 -- said it cast and didn't, the slot that was OFF and still fired, the catalog buff that could never match —
 -- cost hours of back-and-forth to extract facts that this blob would have handed over in one paste.
@@ -25,7 +25,7 @@ end
 
 -- every GEC addon that's loaded, with its version — "which builds were in play" is the first question we
 -- ask on any report, and a mismatched pair (SBF new, a shared lib old) is a real failure mode.
-local GEC_ADDONS = { "SBF", "Haul", "Megaphone", "Gadgets", "GEC-Console", "GECStore-session" }
+local GEC_ADDONS = { "SBF", "Haul", "Megaphone", "Gadgets", "GECStore-session" }
 local LIBS = { "GECBind-1.0", "GECLoot-1.0", "GECTheme-1.0", "GECStore-1.0", "GECData-1.0",
                "GECReader-1.0", "GECMap-1.0", "GECStoreView-1.0" }
 
@@ -132,7 +132,7 @@ local BEHAVIOUR_KEYS = {
   "applyBackoff", "castBackoff", "consumeSeconds", "poleSlot", "fallingBoats", "refreshSkillOnCast",
   "showUnownedItems", "showUnownedToys", "showWarbandItems", "showHiddenItems", "journalWarmTimeout",
   -- the loot/jump override switches. These decide whether the loot key can bind at all, and a user who
-  -- flipped one from a console button has no memory of doing it — so the report has to state them.
+  -- changed one has no memory of doing it — so the report has to state them.
   "jumpKeyState", "jumpKeyupHold", "jumpHeldMaxDefer", "pollInterval", "ascentBreaker", "bounceJump",
   "bounceBreakWithBuff", "surfaceClimbJump",
 }
@@ -184,7 +184,7 @@ end
 -- Far more valuable than anything the reporter can describe in prose.
 local function anomalyLines(out)
   local counts, log
-  if SBF.AnomalyReport then counts, log = SBF.AnomalyReport()   -- dev read-back (stripped from public)
+  if SBF.AnomalyReport then counts, log = SBF.AnomalyReport()
   else counts, log = SBF._anomalyCount, SBF._anomalyLog end     -- public: the recorder itself always ships
   counts, log = counts or {}, log or {}
   local tags = {}
@@ -279,8 +279,7 @@ end
 -- Two shipped bugs — a hardcoded "/cast Fishing" and a hardcoded spell id 131474 — were completely invisible
 -- on an English client and broke EVERY German one: the default cast silently did nothing, and logging/stats
 -- never recorded a thing. Both took a round trip to diagnose because the report said nothing about locale.
--- It does now, and the console probe that found them is useless here: GEC-Console is a dev addon a reporter
--- does not have. So the evidence has to ship inside the report itself.
+-- It does now: the evidence ships inside the report itself.
 --
 -- One line on an English client (where this class of bug cannot bite), the full picture on any other —
 -- the spellbook dump is what proves which ids this character's Fishing actually uses, and it is exactly the
@@ -414,9 +413,8 @@ function SBF.BugReport(note)
   return table.concat(out, "\n")
 end
 
--- ALWAYS opens its own copy window, for everyone. It must never depend on the dev console: a public user
--- doesn't have GEC-Console installed, and the report is worth exactly nothing if they can't select and copy
--- it. Self-contained, closes on Escape, pre-selects the text so it's Ctrl+C and done.
+-- ALWAYS opens its own copy window, for everyone. It must never depend on any other addon: the report is worth
+-- exactly nothing if they can't select and copy it. Self-contained, closes on Escape, pre-selects the text so it's Ctrl+C and done.
 function SBF.ShowBugReport(note)
   local text = SBF.BugReport(note)
   local f = SBF._reportFrame

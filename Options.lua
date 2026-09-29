@@ -1,6 +1,10 @@
 -- SBF options — drag an item (or type a macro) into each slot, then set a key
 -- combo. Built as an AddOns Settings canvas page.
 local ADDON, ns = ...
+-- Forever (interface 16001) ships the modern API WITHOUT the deprecated item globals; alias them to C_Item
+-- file-locally (never write _G, so other addons' own version checks are untouched). Retail: unchanged.
+local GetItemInfo = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+local GetItemInfoInstant = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
 
 -- Shared GECTheme handle (per-addon palette via SBFDB.themePreset). Every access through this proxy
 -- first re-activates SBF's preset, so reading Theme.colors.X always returns SBF's palette — even from a
@@ -826,6 +830,14 @@ local function Build()
   -- Equipment-mgr button: open the character pane AND select the Equipment Manager sidebar (retail
   -- PaperDollSidebarTab3 = Stats(1)/Titles(2)/Equipment Manager(3)). Only force the sidebar when opening
   -- (don't fight a user who toggles it closed); falls back to the plain character pane if neither path exists.
+  -- Which character-sheet sidebar tab is the Equipment Manager? Retail: Stats(1)/Titles(2)/EM(3). WoW: Forever:
+  -- Stats(1)/EM(2)/Pet(3). Resolved from Blizzard's own PAPERDOLL_SIDEBARS list, not a hardcoded number.
+  function SBF._EquipMgrTab()
+    if PAPERDOLL_SIDEBARS and PAPERDOLL_SIDEBARTAB_EQUIPMENTMANAGER then
+      for i, sb in ipairs(PAPERDOLL_SIDEBARS) do if sb == PAPERDOLL_SIDEBARTAB_EQUIPMENTMANAGER then return i end end
+    end
+    return 3
+  end
   local emBtn = CreateFrame("Button", nil, pBtn, "UIPanelButtonTemplate")
   emBtn:SetSize(140, 22); emBtn:SetPoint("LEFT", gearDD, "RIGHT", 6, 0); emBtn:SetText("Equipment Manager"); Theme.Button(emBtn)
   emBtn:SetScript("OnClick", function()
@@ -849,16 +861,114 @@ local function Build()
       ToggleCharacter("PaperDollFrame")            -- open on another tab -> switch to PaperDoll (won't close)
     end
     -- Select the Equipment Manager sidebar AFTER the frame lays out its sidebar tabs (best-effort on top).
-    -- Tab3 = Equipment Manager (Stats=1/Titles=2/EM=3). Click the real tab first (full handler); else the fn.
+    -- The EM tab's index differs per client (SBF._EquipMgrTab). Click the real tab first (full handler); else the fn.
     C_Timer.After(0, function()
-      if PaperDollSidebarTab3 and PaperDollSidebarTab3:IsShown() then
-        pcall(function() PaperDollSidebarTab3:Click() end)
+      local i = SBF._EquipMgrTab()
+      local tab = _G["PaperDollSidebarTab" .. i]
+      if tab and tab:IsShown() then
+        pcall(function() tab:Click() end)
       elseif PaperDollFrame_SetSidebar then
-        pcall(PaperDollFrame_SetSidebar, 3)
+        pcall(PaperDollFrame_SetSidebar, tab, i)
       end
     end)
   end)
   barTip(emBtn, "Open equipment manager", "Open the character pane's Equipment Manager tab to edit this profile's set. SBF puts you in the set to edit, then restores your normal gear when you close the window.")
+
+  -- TAINT-FREE OPEN. Calling ToggleCharacter from SBF runs Blizzard's CharacterFrame:OnShow as SBF-tainted
+  -- code, and on WoW: Forever that OnShow compares the player's (secret) health for the status text and throws
+  -- "attempt to compare a secret number value (execution tainted by 'SBF')", which aborts the open. So the
+  -- click goes through a transparent SECURE overlay instead: its macro "/click"s Blizzard's own micro button
+  -- and sidebar tab, so all of Blizzard's code runs untainted. The overlay lives on UIParent (never a child of
+  -- our window, or the whole options window would turn protected), follows emBtn out of combat, and is hidden
+  -- on PLAYER_REGEN_DISABLED (fires just BEFORE lockdown). In combat the plain emBtn is what you
+  -- click; its OnClick above still runs there (retail tolerates it).
+  do   -- scoped: this builder function sits at Lua's 200-locals limit
+    local emSecure = CreateFrame("Button", "SBFEquipMgrSecure", UIParent, "SecureActionButtonTemplate")
+    -- Mouse clicks obey ActionButtonUseKeyDown too: with the CVar at 1 an AnyUp-only secure button silently
+    -- drops its action (the sbf-cast-keydown-edge trap). useOnKeyDown=false pins THIS button to act on the
+    -- release whatever the CVar says, so the single registered edge (AnyUp) always matches and PreClick runs once.
+    emSecure:RegisterForClicks("AnyUp")
+    emSecure:SetAttribute("useOnKeyDown", false)
+    emSecure:EnableMouse(true); if emSecure.EnableMouseMotion then emSecure:EnableMouseMotion(true) end   -- hover (tooltip) AND click
+    emSecure:SetAttribute("type", "macro")
+    emSecure:Hide()
+    emSecure:SetScript("PreClick", function(self)
+      if InCombatLockdown() then return end
+      local w = SBF.working                                -- same edit-session setup as emBtn's OnClick
+      if w and (w.equipSet or w.pole) and SBF.EquipProfileGear then
+        SBF.EquipProfileGear()
+        SBF._emEditing = true
+      end
+      local open = CharacterFrame and CharacterFrame:IsShown()
+      -- Forever's character sheet has a collapsible right pane, and the Equipment Manager tab (PaperDollSidebarTab3)
+      -- only exists while it is EXPANDED. The collapse is a saved preference, so expand it first when it's closed.
+      -- (Retail has no collapsible pane: IsRightPaneCollapsed is nil there and this adds nothing.)
+      local collapsed = CharacterFrame and CharacterFrame.IsRightPaneCollapsed and (
+        (CharacterFrame.rightPaneCollapsed == nil and CHARACTER_FRAME_COLLAPSED_CVAR and C_CVar.GetCVarBool(CHARACTER_FRAME_COLLAPSED_CVAR))
+        or CharacterFrame:IsRightPaneCollapsed())
+      self:SetAttribute("macrotext", (open and "" or "/click CharacterMicroButton\n")
+        .. (collapsed and "/click CharacterFrameRightPaneToggleButton\n" or "") .. "/click PaperDollSidebarTab" .. SBF._EquipMgrTab())
+    end)
+    emSecure:SetScript("OnEnter", function()
+      emBtn:LockHighlight()
+      local onEnter = emBtn:GetScript("OnEnter"); if onEnter then onEnter(emBtn) end
+    end)
+    emSecure:SetScript("OnLeave", function()
+      emBtn:UnlockHighlight()
+      local onLeave = emBtn:GetScript("OnLeave"); if onLeave then onLeave(emBtn) end
+    end)
+    -- A protected frame may not be anchored to ANY addon region ("Cannot anchor protected frames to regions"),
+    -- so the overlay is placed in absolute UIParent coordinates copied from emBtn, and a driver re-copies them
+    -- each frame while emBtn is visible (the window can be dragged). Out of combat only; hidden in combat.
+    -- ONE STRATA UP, not just a higher level. Probed on Forever: with the overlay at the same strata and level 9,
+    -- the game still hit-tested SBFOptions (level 1) as the frame under the mouse (overlay IsMouseOver=true, yet
+    -- no hover, no click). A higher strata always wins the hit test regardless of levels.
+    local STRATA_ABOVE = { BACKGROUND = "LOW", LOW = "MEDIUM", MEDIUM = "HIGH", HIGH = "DIALOG",
+                           DIALOG = "FULLSCREEN", FULLSCREEN = "FULLSCREEN_DIALOG", FULLSCREEN_DIALOG = "TOOLTIP" }
+    local last = {}
+    local function placeEmSecure()
+      if InCombatLockdown() then return end
+      local l, b, w, h = emBtn:GetLeft(), emBtn:GetBottom(), emBtn:GetWidth(), emBtn:GetHeight()
+      if not (l and b) then return end
+      local k = emBtn:GetEffectiveScale() / UIParent:GetEffectiveScale()
+      l, b, w, h = l * k, b * k, w * k, h * k
+      -- Re-stack EVERY tick: clicking our window raises its frame levels (toplevel), which put emBtn back on
+      -- top of the overlay and sent the click down the tainted path. Belt and braces: while the overlay is up,
+      -- emBtn stops taking the mouse at all, so the click can only land on the overlay.
+      emSecure:SetFrameStrata(STRATA_ABOVE[emBtn:GetFrameStrata()] or "DIALOG"); emSecure:SetFrameLevel(emBtn:GetFrameLevel() + 5)
+      if l == last.l and b == last.b and w == last.w and h == last.h and emSecure:IsShown() then return end
+      last.l, last.b, last.w, last.h = l, b, w, h
+      emSecure:ClearAllPoints()
+      emSecure:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", l, b)
+      emSecure:SetSize(w, h)
+      emSecure:Show()
+      emBtn:EnableMouse(false)
+    end
+    local function hideEmSecure()
+      emSecure:Hide(); last.l = nil
+      emBtn:EnableMouse(true)                         -- in combat / window closed: the plain button is live again
+    end
+    local emDriver = CreateFrame("Frame")
+    emDriver:Hide()
+    emDriver:SetScript("OnUpdate", placeEmSecure)
+    local function syncEmSecure()
+      if InCombatLockdown() then return end
+      if emBtn:IsVisible() then
+        emDriver:Show(); placeEmSecure()
+      else
+        emDriver:Hide(); hideEmSecure()
+      end
+    end
+    emBtn:HookScript("OnShow", syncEmSecure)
+    emBtn:HookScript("OnHide", syncEmSecure)
+    local emCombat = CreateFrame("Frame")
+    emCombat:RegisterEvent("PLAYER_REGEN_DISABLED")
+    emCombat:RegisterEvent("PLAYER_REGEN_ENABLED")
+    emCombat:SetScript("OnEvent", function(_, e)
+      if e == "PLAYER_REGEN_DISABLED" then emDriver:Hide(); hideEmSecure() else syncEmSecure() end
+    end)
+    syncEmSecure()
+  end
 
   -- Hook CharacterFrame OnHide ONCE: when the pane closes during an SBF-initiated edit session, clear the
   -- editing flag and restore the pre-fishing gear (the snapshot). _emEditing is set ONLY by our button, so
@@ -1164,7 +1274,7 @@ local function Build()
   local function C(label, get, set, key) return { label = label, get = get, set = set, help = optHelp(key) } end
 
   -- forward decls (referenced by set closures; defined once refs/root exist below)
-  local refreshInterfaceOpts, refreshProfileToggles
+  local refreshInterfaceOpts, refreshProfileToggles, refreshZoneGlow
   local root, refs
 
   -- ---- hosted coupled editboxes (kept as-is, positioned by the tree) ----
@@ -1296,6 +1406,129 @@ local function Build()
     }
   end
 
+  -- ---- Zone glow watch rows: per-row enable + glow-color swatch + sound + Test ----
+  -- Rows render straight from the LIVE config tables (SBF.ZoneWatches - the SavedVariables themselves), so
+  -- a new watch added to the seed shows up here with no UI work. Row edits apply instantly (refresh call)
+  -- and persist. Built once per window build; the list only changes via a code seed, so that's enough.
+  -- Parameterized by PARENT because the rows have two possible homes: the Settings page (the shipped
+  -- location today) or any other page that wants them grouped by each row's content tag.
+  -- Returns ORDERED GROUPS: { { key, header, specs = {rowSpec, ...} }, ... } grouped by content
+  -- expansion+season; a caller that wants a flat list concatenates the specs.
+  local devWorld = false   -- luacheck: ignore 311
+  local function buildZoneRows(parent)
+    local zw = SBF.ZoneWatches and SBF.ZoneWatches()
+    local list = {}
+    for _, r in ipairs((zw and zw.auras) or {}) do list[#list + 1] = r end
+    for _, r in ipairs((zw and zw.vignettes) or {}) do list[#list + 1] = r end
+    local function refreshInd() if SBF.ZoneIndicatorRefresh then SBF.ZoneIndicatorRefresh() end end
+    -- COLUMN ALIGNMENT (same trick as the Audio-feedback sound rows): give every row's check cell one fixed
+    -- width = the widest label across ALL rows, so the swatch / sound dropdown / Test columns start at the
+    -- same x on every row — and, because the measurement spans the whole list rather than one group, the
+    -- columns stay aligned ACROSS the expansion/season groups too. Every other cell is already fixed-width
+    -- (swatch 20, dropdown 150, Test 46), so this one basis lines the whole table up.
+    local _zw = parent:CreateFontString(nil, "ARTWORK", "GameFontHighlight"); _zw:Hide()
+    local widest = 0
+    for _, r in ipairs(list) do
+      _zw:SetText(r.label or "?")
+      widest = math.max(widest, _zw:GetStringWidth() or 0)
+    end
+    local ZONE_CHECK_W = math.ceil(26 + widest + 10)   -- CB_HIT(24)+gap(2) + widest label + pad
+    local function makeSwatch(row)
+      local b = CreateFrame("Button", nil, parent)
+      b:SetSize(20, 20)
+      local edge = b:CreateTexture(nil, "BACKGROUND"); edge:SetAllPoints(); edge:SetColorTexture(0, 0, 0, 0.9)
+      b.tex = b:CreateTexture(nil, "ARTWORK")
+      b.tex:SetPoint("TOPLEFT", 1, -1); b.tex:SetPoint("BOTTOMRIGHT", -1, 1)
+      local function paintSwatch()
+        local col = row.color or { 1, 1, 1 }
+        b.tex:SetColorTexture(col[1] or 1, col[2] or 1, col[3] or 1, 1)
+      end
+      paintSwatch()
+      b:SetScript("OnClick", function()
+        local col = row.color or { 1, 1, 1 }
+        local function apply()
+          local r, g, bl = ColorPickerFrame:GetColorRGB()
+          row.color = { r, g, bl }
+          paintSwatch(); refreshInd()
+        end
+        ColorPickerFrame:SetupColorPickerAndShow({
+          r = col[1] or 1, g = col[2] or 1, b = col[3] or 1,
+          swatchFunc = apply, okayFunc = apply,
+          cancelFunc = function(prev)
+            if prev then row.color = { prev.r, prev.g, prev.b }; paintSwatch(); refreshInd() end
+          end,
+        })
+      end)
+      b:SetScript("OnEnter", function(self) showTip(self, "Glow color", "The screen-edge color this watch glows. Click to pick.") end)
+      b:SetScript("OnLeave", GameTooltip_Hide)
+      return b
+    end
+    local function makeSoundDD(row)
+      local dd = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
+      dd:SetSize(150, 22); Theme.SkinDropdown(dd)
+      dd:SetupMenu(function(_dd, rootMenu)
+        rootMenu:CreateRadio("No sound",
+          function() return row.soundOn == false end,
+          function() row.soundOn = false end)
+        for _, o in ipairs(SOUND_CHOICES) do
+          if not o.file then   -- the flat-key "custom file" entry doesn't apply to per-row storage
+            rootMenu:CreateRadio(o.label,
+              function()
+                if row.soundOn == false then return false end
+                if o.filePath then return row.soundMode == "file" and row.soundFile == o.filePath end
+                return row.soundMode ~= "file" and row.soundId == o.id
+              end,
+              function()
+                row.soundOn = true
+                if o.filePath then row.soundMode, row.soundFile = "file", o.filePath
+                else row.soundMode, row.soundId = "kit", o.id end
+                if SBF.PlayZoneWatchSound then SBF.PlayZoneWatchSound(row, true) end   -- preview on pick
+              end)
+          end
+        end
+      end)
+      return dd
+    end
+    local groups, byKey = {}, {}
+    for _, row in ipairs(list) do
+      local sw, dd = makeSwatch(row), makeSoundDD(row)
+      local t = Theme.MakeButton(parent, 46, "Test", function()
+        -- the full package: the glow in this row's color for a few seconds AND its sound (not sound alone)
+        if SBF.PreviewZoneWatch then SBF.PreviewZoneWatch(row)
+        elseif SBF.PlayZoneWatchSound then SBF.PlayZoneWatchSound(row, true) end
+      end)
+      t:SetHeight(20)
+      local spec = { dir = "row", align = "center", pad = { l = 26 },
+        -- basis = the shared check-column width, so every following cell starts at the same x (see above)
+        { check = { label = row.label or "?",
+            get = function() return row.enabled ~= false end,
+            set = function(v) row.enabled = v and true or false; refreshInd() end,
+            help = row.note }, basis = ZONE_CHECK_W },
+        { frame = sw }, { frame = dd }, { frame = t },
+      }
+      local ct = row.content or {}
+      local key = (ct.expansion or "General") .. "|" .. tostring(ct.season or "")
+      local g = byKey[key]
+      if not g then
+        g = { key = key, specs = {},
+              header = (ct.expansion or "General") .. (ct.season and ("  -  Season " .. ct.season) or "") }
+        byKey[key] = g; groups[#groups + 1] = g
+      end
+      g.specs[#g.specs + 1] = spec
+    end
+    return groups
+  end
+  -- Settings-page instance of the watch rows.
+  local zgRowSpecs = {}
+  if #zgRowSpecs == 0 and SBF.ZoneWatchesFull and SBF.ZoneWatchesFull() then
+    for _, g in ipairs(buildZoneRows(pBe)) do
+      for _, s in ipairs(g.specs) do zgRowSpecs[#zgRowSpecs + 1] = s end
+    end
+  end
+  local zgLabel = "Zone buff glow  (screen edges glow while a special fishing buff is on you)"
+  -- Patiently Rewarded's Audio-feedback sound row.
+  local prSoundRowSpec = soundRowSpec("Patiently Rewarded", { enable = "prSound", mode = "prSoundMode", id = "prSoundId" }, SBF.PlayPRSound, "set.prSound")
+
   -- ---- the declarative tree (visual order top -> bottom) ----
   local tree = {
     gap = "section", pad = { t = 8, r = 10, b = 12, l = 4 },
@@ -1348,13 +1581,17 @@ local function Build()
       { check = C("Refresh skill on cast",
           function() return SBFDB.refreshSkillOnCast ~= false end,
           function(v) SBFDB.refreshSkillOnCast = v and true or false end, "set.refreshSkillOnCast") },
-      { check = C("Zone buff glow  (screen edges glow while a special fishing buff is on you)",
+      { check = C(zgLabel,
           function() local z = SBFDB.zoneIndicator; return not z or z.enabled ~= false end,
           function(v)
             SBFDB.zoneIndicator = SBFDB.zoneIndicator or {}
             SBFDB.zoneIndicator.enabled = v and true or false
+            if refreshZoneGlow then refreshZoneGlow() end
             if SBF.ZoneIndicatorRefresh then SBF.ZoneIndicatorRefresh() end
-          end, "set.zoneIndicator") },
+          end, "set.zoneIndicator"), id = "zg" },
+      -- the per-watch rows (enable + color + sound); the whole group hides with the master toggle
+      { id = "zgSub", hidden = #zgRowSpecs == 0 or (SBFDB.zoneIndicator and SBFDB.zoneIndicator.enabled == false) or false,
+        unpack(zgRowSpecs) },
       { check = C("Hide interface in combat",
           function() return (SBFDB.combatWindowMode or "collapse") ~= "off" end,
           function(v) SBFDB.combatWindowMode = v and "collapse" or "off" end, "set.combatWindows") },
@@ -1438,6 +1675,29 @@ local function Build()
       },
     },
 
+    -- Bobber reach (Reach.lua). Retail + WoW: Forever only. The two mode boxes are exclusive: ticking one clears
+    -- the other; with neither ticked a far bobber is reeled by pointing at it with the mouse.
+    { section = "Bobber reach", hidden = not (SBF.ShowReachSettings and SBF.ShowReachSettings()),
+      { note = { text = "The bobber has to land where your camera can see it. Zoomed all the way in or looking "
+          .. "down at your feet, far casts always read as out of reach: zoom out a little and look out over the water.",
+          color = "textMuted" } },
+      { check = C("Extend the interact key's reach while fishing",
+          function() return (SBF.ReachYards and SBF.ReachYards() or 0) > 0 end,
+          function(v) SBFDB.bobberReach = (not v) and 0 or nil; if not v and SBF.RestoreBobberReach then SBF.RestoreBobberReach() end end,
+          "set.bobberReach") },
+      { check = C("Zoom the camera out while fishing  (if you're closer)",
+          function() return (SBF.ReachZoom and SBF.ReachZoom() or 0) > 0 end,
+          function(v) SBFDB.reachZoom = (not v) and 0 or nil; if not v and SBF.RestoreFishingZoom then SBF.RestoreFishingZoom() end end,
+          "set.reachZoom") },
+      { check = C("Point the camera straight ahead on every cast  (uses WoW camera view 5)",
+          function() return SBFDB.reachFaceView and true or false end,
+          function(v) SBFDB.reachFaceView = v and true or nil end, "set.reachFaceView") },
+      { check = C("Recast when the bobber lands out of reach",
+          function() return SBF.ReachMode and SBF.ReachMode() == "recast" end,
+          function(v) SBFDB.reachMode = v and "recast" or "mouseover" end, "set.reachRecast") },
+      soundRowSpec("Out of reach", { enable = "reachSound", mode = "reachSoundMode", id = "reachSoundId" }, SBF.PlayReachSound, "set.reachSound"),
+    },
+
     { section = "Audio feedback",
       -- a SINGLE left-aligned column: all 5 sound rows stacked, each row left-packed (check with no grow,
       -- then dropdown + Test next to it). A half-width column couldn't fit a check+dropdown+Test row.
@@ -1446,7 +1706,7 @@ local function Build()
       soundRowSpec("No fish hooked", { enable = "noFishSound", mode = "noFishSoundMode", id = "noFishSoundId" }, SBF.PlayNoFishSound, "set.noFishSound"),
       soundRowSpec("Expired (ran full, no bite)", { enable = "expiredSound", mode = "expiredSoundMode", id = "expiredSoundId" }, SBF.PlayExpiredSound, "set.expiredSound"),
       soundRowSpec("Nothing (empty line)", { enable = "nothingSound", mode = "nothingSoundMode", id = "nothingSoundId" }, SBF.PlayNothingSound, "set.nothingSound"),
-      soundRowSpec("Patiently Rewarded", { enable = "prSound", mode = "prSoundMode", id = "prSoundId" }, SBF.PlayPRSound, "set.prSound"),
+      prSoundRowSpec,
     },
 
     { section = "Visuals",
@@ -1457,14 +1717,13 @@ local function Build()
     },
   }
 
-  -- (The dev-only "Debugging" section — debug log, decision trace, footing, mouse debug, theme preview —
-  -- lives on the dev-only Debug tab, which is stripped from the public build.)
 
   root, refs = Theme.Layout(pBe, tree, { setParentHeight = true, settle = pBe })
+
   oVal = refs.oval
   oshow(SBFDB.bgAlpha or 0.94)
   SBF._sitCheck = refs.sit
-  -- SBF._footingCheck is set from the dev-only Debug tab (stripped from the public build), so it stays nil here.
+  -- SBF._footingCheck may be nil here; everything that reads it guards for that.
 
   -- conditional groups: toggle a box's node.hidden then relayout so siblings re-stack (replaces the old
   -- per-widget SetShown bookkeeping). refs.<id> for a container is its Box handle.
@@ -1477,6 +1736,10 @@ local function Build()
   end
   refreshProfileToggles = function()
     setHidden(refs.advSub, SBFDB.advancedMode == false)
+    if root then root:Invalidate() end
+  end
+  refreshZoneGlow = function()
+    setHidden(refs.zgSub, #zgRowSpecs == 0 or (SBFDB.zoneIndicator and SBFDB.zoneIndicator.enabled == false))
     if root then root:Invalidate() end
   end
 
@@ -1568,9 +1831,9 @@ local function Build()
   -- scheme), so retuning a color there updates SBF's log too — no more hardcoded drift. The fallback hex
   -- keeps it correct if an older embedded GECTheme predates a name. skill unifies to Haul's shared lilac.
   local function kcol(name, fb) return (Theme.ColorToHex and Theme.ColorToHex(name)) or fb end
-  local KIND_COLOR = { caught = kcol("caught","33ff33"), expired = kcol("expired","aaaaaa"), nothing = kcol("nothing","dd8faf"), missed = kcol("missed","ffaa44"), interrupt = kcol("interrupt","ff6060"), castfail = kcol("castfail","ff8844"), action = kcol("action","7fb0e6"), buff = kcol("buff","ffcf40"), skill = kcol("skill","c7a2ff"), chest = kcol("chest","c0d860"), gathered = kcol("gathered","c0d860"),
+  local KIND_COLOR = { caught = kcol("caught","33ff33"), expired = kcol("expired","aaaaaa"), nothing = kcol("nothing","dd8faf"), missed = kcol("missed","ffaa44"), interrupt = kcol("interrupt","ff6060"), castfail = kcol("castfail","ff8844"), action = kcol("action","7fb0e6"), buff = kcol("buff","ffcf40"), skill = kcol("skill","c7a2ff"), chest = kcol("chest","c0d860"), gathered = kcol("gathered","c0d860"), unreachable = kcol("unreachable","e0b050"),
     start = kcol("start","45c4a0"), stop = kcol("stop","ff6060"), pause = kcol("pause","ffaa44"), resume = kcol("resume","45c4a0"), fold = kcol("fold","c080ff"), include = kcol("include","808080"), exclude = kcol("exclude","a0a0a0") }   -- session lifecycle markers
-  local KIND_LABEL = { caught = "CAUGHT", expired = "EXPIRED", nothing = "NOTHING", missed = "MISSED", interrupt = "interrupt", castfail = "cast-fail", action = "ACTION", buff = "chest up", skill = "SKILL UP", chest = "CHEST", gathered = "gathered",
+  local KIND_LABEL = { caught = "CAUGHT", expired = "EXPIRED", nothing = "NOTHING", missed = "MISSED", interrupt = "interrupt", castfail = "cast-fail", action = "ACTION", buff = "chest up", skill = "SKILL UP", chest = "CHEST", gathered = "gathered", unreachable = "out of reach",
     start = "start", stop = "stop", pause = "pause", resume = "resume", fold = "fold", include = "incl", exclude = "excl" }
   -- Kinds we don't currently PRODUCE — hidden from the Kind filter dropdown so it isn't cluttered with dead
   -- entries. They stay in KIND_COLOR/LABEL (so any stray legacy row still renders a real label), and any that
@@ -2107,7 +2370,7 @@ local function Build()
     elseif statsPeriod == "session" then
       spanText = "this session (since it started)"
       -- show the OPEN session's id so you can tell which session these live numbers belong to (you can
-      -- start a new one via the GEC-Console SBF.Session.new button; the id changes when you do).
+      -- start a new one with /run SBF.NewSession(); the id changes when you do).
       local S = SBF.Session and SBF.Session()
       local sid = S and S.Sid and S:Sid()
       if sid then spanText = spanText .. "   |cff808080session " .. tostring(sid) .. "|r" end
@@ -2142,12 +2405,27 @@ local function Build()
     end
     y = y - 50
 
+    -- out-of-reach metric (Reach.lua): how many line-outs landed beyond the interact key's reach. Deliberately OUTSIDE
+    -- the cast/catch-rate numbers above: a recast "unreachable" cast never had a fair chance, and one reeled by
+    -- pointing at it is already counted by its real outcome. Shown once any have been seen.
+    if (roll.oor or 0) > 0 or (kc.unreachable or 0) > 0 then
+      local lineOuts = casts + (kc.unreachable or 0)
+      local oorN = roll.oor or 0
+      local pct = lineOuts > 0 and string.format("%d%%", math.floor(oorN / lineOuts * 100 + 0.5)) or "-"
+      local ol = fsAcquire("GameFontHighlightSmall"); ol:SetPoint("TOPLEFT", PAD, y)
+      ol:SetText(("Out of reach: |cffe0b050%d|r of %d line-outs (%s)   recast: %d   |cff808080not counted in the numbers above|r")
+        :format(oorN, lineOuts, pct, kc.unreachable or 0))
+      Theme.Font(ol, "textDim")
+      tipAcquire(W - PAD * 2, 16, "Out of reach", "Casts whose bobber landed beyond the interact key's reach. Recast ones are logged as 'out of reach' and left out of casts and catch rate. Ones you still reeled in by pointing at them count as their real outcome. Settings, Bobber reach."):SetPoint("TOPLEFT", PAD, y)
+      y = y - 18
+    end
+
     -- divider + 3) event tally bars ----------------------------------------------------------------------
     local div1 = texAcquire(); div1:SetPoint("TOPLEFT", PAD, y); div1:SetSize(W - PAD * 2, 1); div1:SetColorTexture(unpack(Theme.colors.divider)); y = y - 10
     local eh = fsAcquire("GameFontNormal"); eh:SetPoint("TOPLEFT", PAD, y); eh:SetText(Theme.Accent("Events"))
     tipAcquire(120, 16, "Cast outcomes", "caught = landed loot · expired = ran full length, no bite · nothing = reeled on time but delivered no loot · missed = clicked too early/late · interrupt = cut short (moved/combat/jump, a chest took the press, or canceled with no reel) · cast-fail = never started (not aimed at water)."):SetPoint("TOPLEFT", PAD, y)
     y = y - 18
-    local tallyOrder = { "caught", "expired", "nothing", "missed", "interrupt", "castfail" }
+    local tallyOrder = { "caught", "expired", "nothing", "missed", "interrupt", "castfail", "unreachable" }
     local trows, maxN = {}, 0
     for _, kk in ipairs(tallyOrder) do local n = kc[kk] or 0; if n > 0 then trows[#trows + 1] = { kk, n }; if n > maxN then maxN = n end end end
     table.sort(trows, function(a, b) return a[2] > b[2] end)
@@ -2433,7 +2711,8 @@ local function Build()
     -- Short intro over the list (broken across lines so it's not one crammed run).
     local note = pSkill:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     note:SetPoint("TOPLEFT", 6, -62); note:SetWidth(380); note:SetJustifyH("LEFT"); note:SetSpacing(3)
-    note:SetText("Fishing level / max in each expansion.\n\"-\" means no skill in that line yet.")
+    note:SetText(SBF.CLASSIC_GEAR and "Your Fishing level / max.\n\"-\" means no Fishing skill yet."
+      or "Fishing level / max in each expansion.\n\"-\" means no skill in that line yet.")
     -- one row per expansion (created once; RefreshSkillBook fills them). Two columns: name | level/max.
     local SB_ROW_TOP, SB_ROW_H = -100, 22
     local skillRows = {}
@@ -2534,9 +2813,8 @@ local function Build()
     Theme.Font(verFS, "textDim")
 
     -- Report a bug — deliberately at the TOP of About. When something is wrong this is the page people open
-    -- first, and a bug report is only worth having if it's the easiest thing on it to find. This is the ONLY
-    -- in-UI route for a shipped user: the dev build bar is dev-gated AND stripped, so a public build has no
-    -- other button. Opens its own self-contained copy window with no dependency on any other addon.
+    -- first, and a bug report is only worth having if it's the easiest thing on it to find. Opens its own
+    -- self-contained copy window with no dependency on any other addon.
     local bug = CreateFrame("Button", nil, pAbout, "UIPanelButtonTemplate")
     bug:SetSize(150, 24); bug:SetPoint("TOP", verFS, "BOTTOM", 0, -10)
     bug:SetText("Report a bug"); Theme.Button(bug)
