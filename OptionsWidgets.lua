@@ -79,7 +79,7 @@ local function DefaultSlotTexture(slotId, def)
     return (C_Spell and C_Spell.GetSpellTexture and (C_Spell.GetSpellTexture(FISHING_SPELL_ID) or C_Spell.GetSpellTexture(7620))) or nil
   elseif slotId == "combat" then
     local empty = not (def.item or def.spell or def.toy or (def.macro and def.macro ~= ""))
-    if empty or def.macro == ns.DEFAULT_COMBAT_MACRO then return "Interface\\Icons\\Trade_Engineering" end
+    if empty or (ns.isDefaultCombatMacro and ns.isDefaultCombatMacro(def.macro)) or def.macro == ns.DEFAULT_COMBAT_MACRO then return "Interface\\Icons\\Trade_Engineering" end
   end
   return nil
 end
@@ -745,7 +745,7 @@ local function MakeItemButton(parent, x, y, def0, onChange, slotId)
       GameTooltip:AddLine("Casts Fishing (wrapped with your sit/cast settings). Drag a macro/item here to override.", 0.85, 0.85, 0.85, true)
     elseif self._isDefault and self.slotId == "combat" then     -- dim gear-icon default
       GameTooltip:SetText("Combat - default", accentRGB())
-      GameTooltip:AddLine("Casts Single-Button Assistant at whatever you are already fighting. Type /sbf addtarget on to also grab the nearest enemy. Drag your own macro here, or right-click to clear back to default.", 0.85, 0.85, 0.85, true)
+      GameTooltip:AddLine((SBF.CLASSIC_GEAR and "Auto-attacks" or "Casts Single-Button Assistant at") .. " whatever you are already fighting. Type /sbf addtarget on to also grab the nearest enemy. Drag your own macro here, or right-click to clear back to default.", 0.85, 0.85, 0.85, true)
     elseif def.item then GameTooltip:SetHyperlink(def.item)
     elseif def.spell and GameTooltip.SetSpellByID then GameTooltip:SetSpellByID(def.spell)
     elseif def.macro then

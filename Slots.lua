@@ -624,7 +624,7 @@ local function itemUsable(id)
   return not dead
 end
 ns.itemUsable = itemUsable
-function SBF.ItemUsable(id) return itemUsable(id) end       -- public: the Options tray + the console audit
+function SBF.ItemUsable(id) return itemUsable(id) end       -- public: the Options tray
 -- (SBF.ResetDeadItemCache was deleted: zero callers, and a "dead" verdict is only ever recorded AFTER
 -- GetItemInfo returned real data, so there is no cold-cache misjudgment for a reset to heal. The cache is
 -- session-only regardless — a /reload clears it.)
@@ -1349,8 +1349,11 @@ ns.describeAction = describeAction
 -- entire channel became invisible to SBF — casts worked, catches landed, and every log/stat write was
 -- silently skipped. Seeds cover the common cases; the spellbook walk below adds whatever THIS character
 -- actually has, which is the only authoritative answer.
-local FISHING_SEED_IDS  = { [131474] = true, [131476] = true }   -- what we SHIPPED with
-local FISHING_SPELL_IDS = { [131474] = true, [131476] = true }   -- seeds + whatever this character has
+-- 7620 .. 33095: WoW: Forever / Classic cast the vanilla-style rank spells (same list as GECLoot's).
+local FISHING_SEED_IDS  = { [131474] = true, [131476] = true,    -- what we SHIPPED with
+                            [7620] = true, [7731] = true, [7732] = true, [18248] = true, [33095] = true }
+local FISHING_SPELL_IDS = {}                                      -- seeds + whatever this character has
+for sid in pairs(FISHING_SEED_IDS) do FISHING_SPELL_IDS[sid] = true end
 local JOURNAL_SPELL_ID  = 271990
 local fishingNameCache
 local function scanFishingSpellbook()

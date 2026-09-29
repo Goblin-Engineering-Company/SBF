@@ -66,10 +66,6 @@ function SBF.BobberOutOfReach()
       SBF.Emit(("|cff45c4a0SBF reach|r targetable at +%.1fs (range %s)"):format(now - startMs / 1000,
         tostring(C_CVar.GetCVar("SoftTargetInteractRange"))))
     end
-    if not (issecretvalue and issecretvalue(g)) then           -- learn the bobber's localized name for the search
-      local n = UnitName("softinteract")
-      if n and not (issecretvalue and issecretvalue(n)) then SBF._bobberName = n end
-    end
     return false
   end
   if SBF._reachNilCast ~= startMs then SBF._reachNilCast, SBF._reachNilSince = startMs, now end
@@ -83,7 +79,6 @@ function SBF.BobberOutOfReach()
         tostring(C_CVar.GetCVar("SoftTargetInteractRange"))))
     end
     local mode = SBF.ReachMode()
-    if mode == "recast" then SBF._chanUnreachable = true end     -- ended by the recast: its own log kind
     if SBFDB.reachSound then SBF.PlayReachSound() end
     if SBFDB.reachAlert ~= false and UIErrorsFrame then
       local msg = SBF.REACH_ALERT[mode]

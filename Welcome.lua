@@ -97,7 +97,7 @@ local function build()
   local content = f.content
 
   -- a scroll frame filling the content child, so the panel scrolls when its body is taller than the window.
-  -- A plain ScrollFrame + the lib's modern auto-hiding scrollbar (mirrors the console window's pattern).
+  -- A plain ScrollFrame + the lib's modern auto-hiding scrollbar (the shared scroll pattern).
   local sf = CreateFrame("ScrollFrame", "SBFWelcomeScroll", content)
   -- Reserve the bottom footer band: the footer is 58 tall anchored 8 up (top at 66), so the scroll body must
   -- STOP above it (70) or the scrolling content bleeds into the "Don't show again" checkbox + buttons.
@@ -301,7 +301,9 @@ local function build()
 
   -- 4) combat --------------------------------------------------------------------
   header(body, PAD, y, W, "Combat  |cff9aa0aa(optional)|r"); y = y - 26
-  para(body, PAD, y, W, "Combat defaults to WoW's Single-Button Assistant, cast at whatever you are already fighting. Drag in your own macro to override.", "textDim"); y = y - 38
+  para(body, PAD, y, W, SBF.CLASSIC_GEAR
+    and "Combat defaults to auto-attack at whatever you are already fighting. Drag in your own macro for real abilities."
+    or "Combat defaults to WoW's Single-Button Assistant, cast at whatever you are already fighting. Drag in your own macro to override.", "textDim"); y = y - 38
   -- the REAL action-slot widget; SBF.SlotDef("combat") routes to the PER-CHARACTER combat config
   ns.MakeItemButton(body, PAD, y, SBF.SlotDef("combat"), nil, "combat")
   y = y - (ICON + 12)

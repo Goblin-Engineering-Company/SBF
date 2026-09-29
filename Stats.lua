@@ -185,6 +185,7 @@ local function mergeRollup(dst, src)
   for k, n in pairs(src.kinds or {}) do dst.kinds[k] = (dst.kinds[k] or 0) + n end
   for cause, n in pairs(src.interrupts or {}) do dst.interrupts[cause] = (dst.interrupts[cause] or 0) + n end
   dst.totalDur = (dst.totalDur or 0) + (src.totalDur or 0)
+  if src.oor then dst.oor = (dst.oor or 0) + src.oor end   -- out-of-reach casts (every field accumulate() writes)
   if src.firstT and (not dst.firstT or src.firstT < dst.firstT) then dst.firstT = src.firstT end
   if src.lastT and (not dst.lastT or src.lastT > dst.lastT) then dst.lastT = src.lastT end
   for id, sit in pairs(src.items or {}) do
@@ -258,6 +259,7 @@ function Stats.EnsureBackfill()
   -- copy the seed's fields into the persistent table (its sub-tables are fresh, so they become persistent)
   roll.v, roll.firstT, roll.lastT, roll.totalDur = seed.v, seed.firstT, seed.lastT, seed.totalDur
   roll.kinds, roll.items, roll.zones = seed.kinds, seed.items, seed.zones
+  roll.oor = seed.oor
   roll.backfilled = true
 end
 

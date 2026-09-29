@@ -185,7 +185,7 @@ end
 -- ---- bobber reach (the interact key's range while fishing) ----
 -- The interact key only soft-targets objects inside SoftTargetInteractRange (about 10yd by default), and a bobber lands
 -- 15-20yd out, so on WoW: Forever most far casts couldn't be reeled with the key. Raised while fishing, restored with the
--- rest of "back to normal" (snapshot in CharGear().reachSnapshot, like the focus-audio CVars). SBFDB.bobberReach = yards
+-- rest of "back to normal" (snapshot in SBFDB.reachState, see below). SBFDB.bobberReach = yards
 -- to apply; nil = REACH_DEFAULT on classic-layout clients and 0 (leave the player's setting alone) on retail.
 -- 60, not 20: measured 2026-09-25 at range 20, half of all casts (25 of 49) were never targetable, while every
 -- reachable one was targetable at the first check (+1.0s), so the cutoff was distance, not timing. The client
@@ -199,20 +199,42 @@ local function reachYards()
   return tonumber(v) or 0
 end
 function SBF.ReachYards() return reachYards() end
--- Checks the LIVE setting on every call, never just the saved reachOn flag. The flag is saved per character and
--- outlives the game setting: after a restart (or anything else resetting SoftTargetInteractRange) it still said
--- "applied", so SBF stopped raising the range and fished at the default ~10yd, which pushed out-of-reach recasts
--- past 50% (reported 2026-09-25). The snapshot is only taken when the flag is off, so the player's real value
--- is never overwritten by our own.
+-- SoftTargetInteractRange is a CLIENT-WIDE setting that the game saves to its config file, so the applied flag and
+-- the player's own value live at ACCOUNT scope ({ on, snap } in SBFDB.reachState), never per character: a per-
+-- character flag let an alt see "not applied", snapshot the raised value as the player's own, and put the raised
+-- value back on every restore (QC 2026-09-29). The snapshot is never our own value: if the setting already reads
+-- what we'd apply and we have no record of the player's, the game default is what goes back.
+local function reachState()
+  local r = SBFDB.reachState
+  if not r then
+    r = {}
+    SBFDB.reachState = r
+    local cg = SBF.CharGear and SBF.CharGear()           -- one-time move from the old per-character fields
+    if cg and cg.reachOn then r.on = true; r.snap = cg.reachSnapshot end
+  end
+  local cg = SBF.CharGear and SBF.CharGear()
+  if cg then cg.reachOn, cg.reachSnapshot = nil, nil end
+  return r
+end
+SBF.ReachState = reachState
+local function reachDefault()
+  local d = C_CVar and C_CVar.GetCVarDefault and C_CVar.GetCVarDefault("SoftTargetInteractRange")
+  return d or "10"
+end
+-- Checks the LIVE setting on every call, never just the saved flag: anything that resets the setting (another
+-- addon, the game's own options) would otherwise leave SBF fishing at the short default range.
 function SBF.ApplyBobberReach()
   local want = reachYards()
   if want <= 0 then return end
-  local cg = SBF.CharGear()
-  local cur = tonumber(getCVarSafe("SoftTargetInteractRange"))
-  if cg.reachOn and cur == want then return end
-  if not cg.reachOn then cg.reachSnapshot = getCVarSafe("SoftTargetInteractRange") end
+  local r = reachState()
+  local cur = getCVarSafe("SoftTargetInteractRange")
+  if r.on and tonumber(cur) == want then return end
+  if not r.on then
+    if tonumber(cur) ~= want then r.snap = cur                               -- the player's own value
+    elseif r.snap == nil or tonumber(r.snap) == want then r.snap = reachDefault() end   -- already raised: never keep ours
+  end
   setCVarSafe("SoftTargetInteractRange", tostring(want))
-  cg.reachOn = true
+  r.on = true
 end
 -- ---- fishing camera zoom (Forever / Classic) ----
 -- The interact key only targets what the CAMERA can see, so a player zoomed all the way in (first person) or
@@ -261,10 +283,23 @@ function SBF.RestoreFishingZoom()
   if d > 0.05 then CameraZoomIn(d) end                      -- back to the exact distance they had
 end
 
-function SBF.RestoreBobberReach()
-  local cg = SBF.CharGear(); if not cg.reachOn then return end
-  if cg.reachSnapshot then setCVarSafe("SoftTargetInteractRange", cg.reachSnapshot) end
-  cg.reachOn = false
+-- `keepFlag` = put the player's value back but remember that SBF applied it (logout: if the client dies before the
+-- setting is saved, the next login still knows to restore).
+function SBF.RestoreBobberReach(keepFlag)
+  local r = reachState(); if not r.on then return end
+  setCVarSafe("SoftTargetInteractRange", r.snap or reachDefault())
+  if not keepFlag then r.on = false end
+end
+
+-- Is anything fishing-related applied right now (gear, focus audio, interact reach, camera zoom)? The ONE predicate
+-- the idle observer and the login/reload handling share, so a new applied state is added here only.
+function SBF.FishingStateApplied()
+  local cg = SBF.CharGear and SBF.CharGear()
+  return (cg and (cg.on or cg.audioOn)) or reachState().on or SBF._zoomSnap ~= nil or false
+end
+-- The client-setting half of it (reach + zoom), which is restored on idle whether or not gear auto-restore is on.
+function SBF.ClientStateApplied()
+  return reachState().on or SBF._zoomSnap ~= nil or false
 end
 
 -- ---- equipment sets (Blizzard Equipment Manager) ----
@@ -300,16 +335,41 @@ local function setInfo(name)
   return id, isEquipped, numInBags or 0, numLost or 0
 end
 
-local function useEquipmentSet(name)
-  local id, _, _, numLost = setInfo(name)
-  if not id then return end
-  if numLost == 0 then C_EquipmentSet.UseEquipmentSet(id) return end
-  warnMissing(name, numLost)                                   -- some pieces are gone: equip the rest one by one
+-- On Forever/Classic the pole IS the main hand, so when the profile names a pole the character owns, the weapon
+-- slots belong to the POLE, not the equipment set. Otherwise a set saved with a sword (or an older pole) in the main
+-- hand and the profile pole take turns: pole on, set puts the sword back, pole on... and the press never fishes
+-- (QC 2026-09-29). Retail keeps the pole in its own slot, so there the set owns every slot as before.
+local WEAPON_SLOTS = { [16] = true, [17] = true }
+local function poleOwnsWeapons()
+  local w = SBF.working
+  if not (CLASSIC_GEAR and w and w.pole) then return false end
+  local have = (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(w.pole))
+            or (GetItemCount and GetItemCount(w.pole)) or 0
+  return have > 0
+end
+
+-- The set's pieces this character should be wearing: slot -> itemID, skipping ignored slots (and the weapon slots
+-- when the pole owns them).
+local function setPieces(id, skipWeapons)
+  local out = {}
   local ids = (C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(id)) or {}
   local ignored = (C_EquipmentSet.GetIgnoredSlots and C_EquipmentSet.GetIgnoredSlots(id)) or {}
   for slot, itemID in pairs(ids) do
-    if not ignored[slot] and type(itemID) == "number" and itemID > 1
-        and GetInventoryItemID("player", slot) ~= itemID then
+    if not ignored[slot] and not (skipWeapons and WEAPON_SLOTS[slot]) and type(itemID) == "number" and itemID > 1 then
+      out[slot] = itemID
+    end
+  end
+  return out
+end
+
+local function useEquipmentSet(name)
+  local id, _, _, numLost = setInfo(name)
+  if not id then return end
+  local skipWeapons = poleOwnsWeapons()
+  if numLost == 0 and not skipWeapons then C_EquipmentSet.UseEquipmentSet(id) return end
+  if numLost > 0 then warnMissing(name, numLost) end           -- some pieces are gone: equip the rest one by one
+  for slot, itemID in pairs(setPieces(id, skipWeapons)) do
+    if GetInventoryItemID("player", slot) ~= itemID then
       local link = SBF.BagItemLink(itemID)
       if link then EquipItemByName(link, slot) end
     end
@@ -331,10 +391,15 @@ local function restoreGear()
   -- the equip-mgr-close path bring sound back with gear. Audio CVars are unprotected, so restore them even
   -- when the gear restore has to defer for combat below.
   if SBF.RestoreAudio then SBF.RestoreAudio() end
-  local snap = SBF.CharGear().snapshot
-  if snap then
+  local cg = SBF.CharGear()
+  local snap = cg.snapshot
+  -- Only while SBF has the fishing gear ON, and only ONCE: the snapshot is spent by the restore. A kept snapshot
+  -- used to replay on every later "back to normal" (the idle revert for the interact range or camera alone, too),
+  -- forcing days-old gear over whatever you had equipped by hand (QC 2026-09-29).
+  if snap and cg.on then
     if InCombatLockdown() then SBF._gearPending = "restore"; return end   -- retry after combat (keep on=true)
     for slot, link in pairs(snap) do if link then EquipItemByName(link, slot) end end
+    cg.snapshot = nil
   end
   -- Clear the "in fishing gear" flag even when there was NO snapshot to restore. Keeps state honest and,
   -- crucially, lets the idle observer stop: with a stuck on=true it (via ShouldIdleRestore) would otherwise
@@ -348,6 +413,17 @@ end
 local function setEquipped(name)
   local id, isEquipped, numInBags, numLost = setInfo(name)
   if not id then return true end                               -- no set / set deleted: nothing to enforce
+  if poleOwnsWeapons() then                                    -- Forever/Classic: judge the set without its weapons
+    local short = 0
+    for slot, itemID in pairs(setPieces(id, true)) do
+      if GetInventoryItemID("player", slot) ~= itemID then
+        if SBF.BagItemLink(itemID) then return false end       -- a piece is in the bags: still to equip
+        short = short + 1                                      -- not worn, not in the bags: missing
+      end
+    end
+    if short > 0 then warnMissing(name, short) end
+    return true
+  end
   if isEquipped then return true end
   if numLost > 0 and numInBags == 0 then                       -- everything you still own is on; only missing pieces left
     warnMissing(name, numLost)
@@ -485,8 +561,16 @@ end
 function SBF.ShouldIdleRestore(now)
   if SBF._emEditing then return false end                          -- editing the set: never yank gear mid-edit
   if not (SBFDB and SBFDB.idleRestoreEnabled) then return false end
-  local cg = SBF.CharGear and SBF.CharGear()
-  if not (cg and (cg.on or cg.audioOn or cg.reachOn or SBF._zoomSnap ~= nil)) then return false end   -- nothing applied -> nothing to revert
+  if not SBF.FishingStateApplied() then return false end   -- nothing applied -> nothing to revert
+  return idlePast(now)
+end
+
+-- With gear auto-restore OFF, the interact range and camera zoom still go back after the idle window: they are
+-- client settings, not gear, and "Auto-restore gear when idle" never promised to keep them.
+function SBF.ShouldIdleRestoreClient(now)
+  if SBF._emEditing then return false end
+  if not SBFDB or SBFDB.idleRestoreEnabled then return false end   -- the full revert above covers it
+  if not SBF.ClientStateApplied() then return false end
   return idlePast(now)
 end
 

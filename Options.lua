@@ -883,6 +883,10 @@ local function Build()
   -- on PLAYER_REGEN_DISABLED (fires just BEFORE lockdown). In combat the plain emBtn is what you
   -- click; its OnClick above still runs there (retail tolerates it).
   do   -- scoped: this builder function sits at Lua's 200-locals limit
+  -- Built OUT OF COMBAT only (secure-frame doctrine): the window is built at login, and a login or /reload in
+  -- combat would block the SetAttribute/RegisterForClicks below and leave a dead overlay over the button. In
+  -- combat the setup waits for PLAYER_REGEN_ENABLED; until then the plain emBtn is the live button.
+  local function setupEmSecure()
     local emSecure = CreateFrame("Button", "SBFEquipMgrSecure", UIParent, "SecureActionButtonTemplate")
     -- Mouse clicks obey ActionButtonUseKeyDown too: with the CVar at 1 an AnyUp-only secure button silently
     -- drops its action (the sbf-cast-keydown-edge trap). useOnKeyDown=false pins THIS button to act on the
@@ -969,6 +973,14 @@ local function Build()
     end)
     syncEmSecure()
   end
+  if InCombatLockdown() then
+    local wait = CreateFrame("Frame")
+    wait:RegisterEvent("PLAYER_REGEN_ENABLED")
+    wait:SetScript("OnEvent", function(self) self:UnregisterAllEvents(); setupEmSecure() end)
+  else
+    setupEmSecure()
+  end
+  end
 
   -- Hook CharacterFrame OnHide ONCE: when the pane closes during an SBF-initiated edit session, clear the
   -- editing flag and restore the pre-fishing gear (the snapshot). _emEditing is set ONLY by our button, so
@@ -1017,7 +1029,9 @@ local function Build()
     GameTooltip:Show()
   end)
   poleBtn:SetScript("OnLeave", GameTooltip_Hide)
-  labelHover(plbl2, 70, "Fishing pole", "The pole this profile equips (into the profession tool slot) on the first action press after switching. Leave it empty and SBF fills it with the pole you're wearing, so you never have to set it by hand. Once it's set, this profile keeps it: put a different pole on and your choice here is left alone. Drag a pole here to change it, right-click to clear and pick up whatever you're wearing.")
+  labelHover(plbl2, 70, "Fishing pole", "The pole this profile equips (" .. (SBF.CLASSIC_GEAR
+    and "into your main hand, replacing your weapon until you stop fishing" or "into the profession tool slot")
+    .. ") on the first action press after switching. Leave it empty and SBF fills it with the pole you're wearing, so you never have to set it by hand. Once it's set, this profile keeps it: put a different pole on and your choice here is left alone. Drag a pole here to change it, right-click to clear and pick up whatever you're wearing.")
 
   -- separator under the fishing-pole row, dividing the gear block from the slot list below (matches the
   -- other separators' faint-white style/width). The scroll frame's top (GEAR_BLOCK_H) sits just under it.
@@ -1406,125 +1420,8 @@ local function Build()
     }
   end
 
-  -- ---- Zone glow watch rows: per-row enable + glow-color swatch + sound + Test ----
-  -- Rows render straight from the LIVE config tables (SBF.ZoneWatches - the SavedVariables themselves), so
-  -- a new watch added to the seed shows up here with no UI work. Row edits apply instantly (refresh call)
-  -- and persist. Built once per window build; the list only changes via a code seed, so that's enough.
-  -- Parameterized by PARENT because the rows have two possible homes: the Settings page (the shipped
-  -- location today) or any other page that wants them grouped by each row's content tag.
-  -- Returns ORDERED GROUPS: { { key, header, specs = {rowSpec, ...} }, ... } grouped by content
-  -- expansion+season; a caller that wants a flat list concatenates the specs.
-  local devWorld = false   -- luacheck: ignore 311
-  local function buildZoneRows(parent)
-    local zw = SBF.ZoneWatches and SBF.ZoneWatches()
-    local list = {}
-    for _, r in ipairs((zw and zw.auras) or {}) do list[#list + 1] = r end
-    for _, r in ipairs((zw and zw.vignettes) or {}) do list[#list + 1] = r end
-    local function refreshInd() if SBF.ZoneIndicatorRefresh then SBF.ZoneIndicatorRefresh() end end
-    -- COLUMN ALIGNMENT (same trick as the Audio-feedback sound rows): give every row's check cell one fixed
-    -- width = the widest label across ALL rows, so the swatch / sound dropdown / Test columns start at the
-    -- same x on every row — and, because the measurement spans the whole list rather than one group, the
-    -- columns stay aligned ACROSS the expansion/season groups too. Every other cell is already fixed-width
-    -- (swatch 20, dropdown 150, Test 46), so this one basis lines the whole table up.
-    local _zw = parent:CreateFontString(nil, "ARTWORK", "GameFontHighlight"); _zw:Hide()
-    local widest = 0
-    for _, r in ipairs(list) do
-      _zw:SetText(r.label or "?")
-      widest = math.max(widest, _zw:GetStringWidth() or 0)
-    end
-    local ZONE_CHECK_W = math.ceil(26 + widest + 10)   -- CB_HIT(24)+gap(2) + widest label + pad
-    local function makeSwatch(row)
-      local b = CreateFrame("Button", nil, parent)
-      b:SetSize(20, 20)
-      local edge = b:CreateTexture(nil, "BACKGROUND"); edge:SetAllPoints(); edge:SetColorTexture(0, 0, 0, 0.9)
-      b.tex = b:CreateTexture(nil, "ARTWORK")
-      b.tex:SetPoint("TOPLEFT", 1, -1); b.tex:SetPoint("BOTTOMRIGHT", -1, 1)
-      local function paintSwatch()
-        local col = row.color or { 1, 1, 1 }
-        b.tex:SetColorTexture(col[1] or 1, col[2] or 1, col[3] or 1, 1)
-      end
-      paintSwatch()
-      b:SetScript("OnClick", function()
-        local col = row.color or { 1, 1, 1 }
-        local function apply()
-          local r, g, bl = ColorPickerFrame:GetColorRGB()
-          row.color = { r, g, bl }
-          paintSwatch(); refreshInd()
-        end
-        ColorPickerFrame:SetupColorPickerAndShow({
-          r = col[1] or 1, g = col[2] or 1, b = col[3] or 1,
-          swatchFunc = apply, okayFunc = apply,
-          cancelFunc = function(prev)
-            if prev then row.color = { prev.r, prev.g, prev.b }; paintSwatch(); refreshInd() end
-          end,
-        })
-      end)
-      b:SetScript("OnEnter", function(self) showTip(self, "Glow color", "The screen-edge color this watch glows. Click to pick.") end)
-      b:SetScript("OnLeave", GameTooltip_Hide)
-      return b
-    end
-    local function makeSoundDD(row)
-      local dd = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
-      dd:SetSize(150, 22); Theme.SkinDropdown(dd)
-      dd:SetupMenu(function(_dd, rootMenu)
-        rootMenu:CreateRadio("No sound",
-          function() return row.soundOn == false end,
-          function() row.soundOn = false end)
-        for _, o in ipairs(SOUND_CHOICES) do
-          if not o.file then   -- the flat-key "custom file" entry doesn't apply to per-row storage
-            rootMenu:CreateRadio(o.label,
-              function()
-                if row.soundOn == false then return false end
-                if o.filePath then return row.soundMode == "file" and row.soundFile == o.filePath end
-                return row.soundMode ~= "file" and row.soundId == o.id
-              end,
-              function()
-                row.soundOn = true
-                if o.filePath then row.soundMode, row.soundFile = "file", o.filePath
-                else row.soundMode, row.soundId = "kit", o.id end
-                if SBF.PlayZoneWatchSound then SBF.PlayZoneWatchSound(row, true) end   -- preview on pick
-              end)
-          end
-        end
-      end)
-      return dd
-    end
-    local groups, byKey = {}, {}
-    for _, row in ipairs(list) do
-      local sw, dd = makeSwatch(row), makeSoundDD(row)
-      local t = Theme.MakeButton(parent, 46, "Test", function()
-        -- the full package: the glow in this row's color for a few seconds AND its sound (not sound alone)
-        if SBF.PreviewZoneWatch then SBF.PreviewZoneWatch(row)
-        elseif SBF.PlayZoneWatchSound then SBF.PlayZoneWatchSound(row, true) end
-      end)
-      t:SetHeight(20)
-      local spec = { dir = "row", align = "center", pad = { l = 26 },
-        -- basis = the shared check-column width, so every following cell starts at the same x (see above)
-        { check = { label = row.label or "?",
-            get = function() return row.enabled ~= false end,
-            set = function(v) row.enabled = v and true or false; refreshInd() end,
-            help = row.note }, basis = ZONE_CHECK_W },
-        { frame = sw }, { frame = dd }, { frame = t },
-      }
-      local ct = row.content or {}
-      local key = (ct.expansion or "General") .. "|" .. tostring(ct.season or "")
-      local g = byKey[key]
-      if not g then
-        g = { key = key, specs = {},
-              header = (ct.expansion or "General") .. (ct.season and ("  -  Season " .. ct.season) or "") }
-        byKey[key] = g; groups[#groups + 1] = g
-      end
-      g.specs[#g.specs + 1] = spec
-    end
-    return groups
-  end
-  -- Settings-page instance of the watch rows.
+  -- The Settings page's zone-watch rows under the glow switch (none in this build: the glow switch alone).
   local zgRowSpecs = {}
-  if #zgRowSpecs == 0 and SBF.ZoneWatchesFull and SBF.ZoneWatchesFull() then
-    for _, g in ipairs(buildZoneRows(pBe)) do
-      for _, s in ipairs(g.specs) do zgRowSpecs[#zgRowSpecs + 1] = s end
-    end
-  end
   local zgLabel = "Zone buff glow  (screen edges glow while a special fishing buff is on you)"
   -- Patiently Rewarded's Audio-feedback sound row.
   local prSoundRowSpec = soundRowSpec("Patiently Rewarded", { enable = "prSound", mode = "prSoundMode", id = "prSoundId" }, SBF.PlayPRSound, "set.prSound")
@@ -1675,7 +1572,7 @@ local function Build()
       },
     },
 
-    -- Bobber reach (Reach.lua). Retail + WoW: Forever only. The two mode boxes are exclusive: ticking one clears
+    -- Bobber reach (Reach.lua). WoW: Forever / Classic only. The two mode boxes are exclusive: ticking one clears
     -- the other; with neither ticked a far bobber is reeled by pointing at it with the mouse.
     { section = "Bobber reach", hidden = not (SBF.ShowReachSettings and SBF.ShowReachSettings()),
       { note = { text = "The bobber has to land where your camera can see it. Zoomed all the way in or looking "

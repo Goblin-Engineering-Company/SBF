@@ -20,7 +20,8 @@ Built by the [Goblin Engineering Company](https://goblineng.co).
 ## Install
 
 1. Download the latest release and copy the `SBF/` folder into
-   `World of Warcraft/_retail_/Interface/AddOns/`.
+   `World of Warcraft/_retail_/Interface/AddOns/` (retail), or the WoW: Forever
+   game folder's `Interface/AddOns/` (Forever). The same download runs on both.
 2. Enable **SBF** in the AddOns list and log in (or `/reload`).
 
 ## Quick start

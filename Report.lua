@@ -341,12 +341,19 @@ function SBF.BugReport(note)
   }
   local proj = _G.WOW_PROJECT_ID
   local flavor = (proj and FLAVORS[proj]) or (proj and ("unknown flavor id " .. tostring(proj))) or "unknown"
-  local notMainline = proj and _G.WOW_PROJECT_MAINLINE and proj ~= _G.WOW_PROJECT_MAINLINE
   local gameVer, build, _, iface = GetBuildInfo()   -- gameVer: `ver` is the addon version upvalue above
-  out[#out + 1] = ("wow    : %s %s (build %s)  interface %s  locale %s%s"):format(
+  -- WoW: Forever reports the MAINLINE project id but runs the classic-style gear layout (interface < 100000).
+  if SBF.CLASSIC_GEAR and flavor == "Retail" then flavor = "WoW: Forever" end
+  out[#out + 1] = ("wow    : %s %s (build %s)  interface %s  locale %s"):format(
     flavor, tostring(gameVer), tostring(build), tostring(iface),
-    tostring(GetLocale and GetLocale() or "?"),
-    notMainline and "   <<< NOT RETAIL - fishing works here, but looting does not: the interact range is too short to reach the bobber" or "")
+    tostring(GetLocale and GetLocale() or "?"))
+  if SBF.CLASSIC_GEAR then   -- bobber reach state (Forever / Classic): the setting SBF raises + the mode
+    local r = SBF.ReachState and SBF.ReachState() or {}
+    out[#out + 1] = ("reach  : mode=%s yards=%s applied=%s live range=%s  zoom=%s"):format(
+      tostring(SBF.ReachMode and SBF.ReachMode()), tostring(SBF.ReachYards and SBF.ReachYards()),
+      tostring(r.on and true or false), tostring(GetCVar and GetCVar("SoftTargetInteractRange")),
+      tostring(SBF.ReachZoom and SBF.ReachZoom()))
+  end
   -- class + level only: they gate spells (boat spells, heals) and are not identifying. NO name/realm/guild.
   localeLines(out)
   local class = select(2, UnitClass("player"))

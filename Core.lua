@@ -78,7 +78,7 @@ end
 -- ===== Dev mode =====
 SBF.DEV = false
 function SBF.IsDev()
-  return SBF.DEV                                            -- public: hard-false (SBF.DEV is flipped false on strip)
+  return SBF.DEV                                            -- public: hard-false
 end
 
 -- The slot descriptor table (SLOTS) + the unified slot engine now live in Slots.lua; Core
@@ -469,7 +469,12 @@ local function learnBuff(slotKey, cdef, deadline)
   local observeOnly = false
   if alreadyLearned() then
     local tries = atIid and observeTries[atIid]
-    local due = atIid and SBFDB and SBFDB.observeCatalogued ~= false
+    -- CATALOGUED items only, and never in a fire-all slot: the observation writes the item's learned record, which
+    -- is the identity a LEARNED item (and every fire-all entry) is matched by, so observing those could let a
+    -- sibling's aura overwrite a correct identity (QC 2026-09-29). A catalogued single-pick item takes its identity
+    -- from the catalog, so its learned record is evidence only.
+    local due = atIid and not fireAll and ns.CatalogKnow and ns.CatalogKnow(atIid)
+      and SBFDB and SBFDB.observeCatalogued ~= false
       and tries ~= "done" and (tries or 0) < (SBFDB.observeMaxTries or 3)
     if not due then
       if SBFDB and (SBFDB.buffDebug or SBFDB.debug) then   -- report WHAT is already known + its source (learned vs hard-coded)
@@ -1265,7 +1270,7 @@ local function DesiredOverride()
   end
   return nil, "idle"
 end
--- (Bobber reach: out-of-reach detection, the mouseover/recast/search modes and the interact-key switch live in
+-- (Bobber reach: out-of-reach detection, the mouseover/recast modes and the interact-key switch live in
 -- Reach.lua; DesiredOverride and UpdateFishKey below call into it.)
 
 local prevFalling = false   -- for the swimming->falling RISING edge (the physical jump landing)
@@ -1429,6 +1434,8 @@ idleFrame:SetScript("OnUpdate", function(_, elapsed)
   -- focus audio) to normal, via the single packaged revert (each side-effect self-guards / no-ops when off).
   if SBF.ShouldIdleRestore and SBF.ShouldIdleRestore(now) and SBF.RevertToNormal then
     SBF.RevertToNormal()
+  elseif SBF.ShouldIdleRestoreClient and SBF.ShouldIdleRestoreClient(now) then
+    SBF.RestoreBobberReach(); SBF.RestoreFishingZoom()   -- gear auto-restore off: the client settings still go back
   end
   -- ...and the SAME idle clock drops FISHING MODE (see the block above pollFrame): standby the background
   -- machinery until the next action press. Independent of the gear gates — fires even with no gear package
@@ -1572,7 +1579,13 @@ end
 -- Embed a registry copy into SBFData on logout/reload so the exported file resolves ch/p standalone.
 local gecLogoutFrame = CreateFrame("Frame")
 gecLogoutFrame:RegisterEvent("PLAYER_LOGOUT")
-gecLogoutFrame:SetScript("OnEvent", function() fishStore():Snapshot() end)
+gecLogoutFrame:SetScript("OnEvent", function()
+  fishStore():Snapshot()
+  SBFDB._zoomSnap = SBF._zoomSnap   -- carried across a /reload only (the login handler drops it on a fresh login)
+  -- The interact range is a client-wide setting the game saves on the way out: put the player's own value back
+  -- (keeping the applied flag, so a crash before the save still restores at the next login).
+  if SBF.RestoreBobberReach then SBF.RestoreBobberReach(true) end
+end)
 
 local function logFishEvent(kind, extra, dur)
   local store = fishStore()
@@ -1869,7 +1882,11 @@ castFailFrame:RegisterEvent("PLAYER_REGEN_DISABLED")   -- entered COMBAT during 
 castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
   if ev == "UI_ERROR_MESSAGE" then
     if BAGS_FULL_ERR[b] then SBF._lootBlocked = true end   -- bags full while looting -> pause casts (a recast would close the window + mail the loot)
-    if isCastFailMsg(b) then               -- b = the message text; match wording, not the shared type
+    -- Line of sight is not fishing-specific: any spell (a combat ability, a heal) raises it. Count it as a FISHING
+    -- cast-fail only right after an action-key press, or every blocked Fireball lands in the fishing stats.
+    local losNotOurs = isCastFailMsg(b) and castFailCause(b) == "los"
+      and not (SBF.lastActionAt and GetTime() - SBF.lastActionAt <= (SBFDB.losPressWindow or 1))
+    if isCastFailMsg(b) and not losNotOurs then   -- b = the message text; match wording, not the shared type
       SBF._castBackoffUntil = GetTime() + (SBFDB.castBackoff or 1.5)
       if SBFDB.castFailSound then SBF.PlayCastFailSound() end
       logFishEvent("castfail", { cause = castFailCause(b) })   -- tag WHY (los / nowater / shallow) — log display + server record
@@ -1898,7 +1915,6 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
       SBFDB._inflight = { start = SBF._logCast, exp = SBF._logCastExp, t = time() }
     else
       SBF._logCast, SBF._logCastExp = nil, nil
-      SBF._faceViewDone = nil                                 -- face-forward camera re-aims on the NEXT cast press
     end
   elseif ev == "LOOT_OPENED" then
     SBF._logCaughtT = GetTime()            -- a loot window opened during/after the cast = a real catch signal
@@ -1971,6 +1987,7 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
       -- the recast race the freeze was meant to fix. It is read live at the verdict instead, attributed by
       -- cast identity. Two signals, two lifetimes: do not treat them as one class again.
       local oorCast, unreachCast = SBF._chanOOR, SBF._chanUnreachable   -- frozen at the stop like `reeled` (a recast zeroes them)
+      SBF._faceViewDone = nil                  -- face-forward camera re-aims on the NEXT cast press (Gear.lua)
       local reeled = SBF._chanReeled           -- true = reel press seen · false = provably none · nil = keys unreadable
       -- FREEZE THE REASON TOO. The block above says every per-cast input the verdict reads must be frozen at
       -- the stop, and this one was not: the verdict runs 0.8s late, resetReelWatch() nils _reelBlindWhy on the
@@ -2398,18 +2415,27 @@ function SBF.Apply()
       -- Belt-and-suspenders for the ~0.15s override-poll lag (the dynamic override suppresses
       -- the key the rest of the time). Loot-while-channeling is handled by the INTERACT override.
       local fa = ns.FishingAction and ns.FishingAction()
-      if fa == "recast" then            -- bobber beyond the interact key's reach: stop this line, cast a new one
-        announce("recasting (bobber out of reach)")
+      -- Recast and dismount carry the combat line like every other branch: the macro FREEZES on the button in
+      -- combat (no rebuild mid-fight), so a bare "/stopcasting /cast Fishing" left there turned every press of
+      -- a fight into a cancelled cast and never swung back. [nocombat] on the out-of-combat half, then the
+      -- [combat]-guarded combat action.
+      if fa == "recast" or fa == "dismount" then
+        local combatDef = SBF.SlotDef("combat")
+        local cl = (not (combatDef and combatDef.skip)) and combatLine(combatDef) or nil
+        local body
+        if fa == "recast" then          -- bobber beyond the interact key's reach: stop this line, cast a new one
+          announce("recasting (bobber out of reach)")
+          SBF._chanUnreachable = true   -- THIS press ended the cast (set here, not at detection: an out-of-reach cast
+                                        -- that expires or gets interrupted keeps its real outcome)
+          body = "/stopcasting [nocombat]\n/cast [nocombat] " .. ((ns.fishingSpellName and ns.fishingSpellName()) or "Fishing")
+        else                            -- ground mount + auto-dismount on: dismount; next press fishes
+          announce("dismounting")
+          body = "/dismount [nocombat]"
+        end
         self:SetAttribute("type", "macro")
         self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
-        applyMacro(self, "/stopcasting\n/cast " .. ((ns.fishingSpellName and ns.fishingSpellName()) or "Fishing"), "reach-recast")
-        return
-      end
-      if fa == "dismount" then          -- ground mount + auto-dismount on: dismount; next press fishes
-        announce("dismounting")
-        self:SetAttribute("type", "macro")
-        self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
-        applyMacro(self, "/dismount", "dismount")
+        applyMacro(self, cl and (body .. "\n/stopmacro [nocombat]\n" .. guardCombat(cl)) or body,
+          fa == "recast" and "reach-recast" or "dismount")
         return
       elseif fa == "wait" then          -- disabled (flying/moving/loot-mode/...) -> no-op OUT of
         -- combat, but KEEP the [combat] attack so combat still fires off the action key.
@@ -3290,6 +3316,19 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
         if SBF.RevertToNormal then SBF.RevertToNormal() end
       end
     end
+    -- The raised interact range (client-wide, account-scoped flag) is handled on its own, NOT through
+    -- RevertToNormal, so a login never replays an old gear snapshot just because the range was left raised.
+    -- Login: put the player's value back. Reload: keep fishing, but start the idle clock so it still goes back.
+    -- The camera zoom snapshot survives a /reload (the camera keeps its distance) but not a fresh login.
+    if arg2 and SBFDB._zoomSnap and SBF._zoomSnap == nil then
+      SBF._zoomSnap = SBFDB._zoomSnap
+      SBF.lastFishingAt = SBF.lastFishingAt or GetTime()   -- so the idle window still puts the camera back
+    end
+    if arg1 or arg2 then SBFDB._zoomSnap = nil end
+    if (arg1 or arg2) and SBF.ReachState and SBF.ReachState().on then
+      if arg1 then SBF.RestoreBobberReach()
+      elseif arg2 then SBF.lastFishingAt = SBF.lastFishingAt or GetTime() end
+    end
     -- re-link an in-flight fishing cast across a /reload (SBF._logCast was wiped, but the channel keeps
     -- running and GetTime() is continuous across /reload). If we're STILL channeling Fishing, restore the
     -- tracking so the stop classifies correctly instead of being dropped/mislabeled; otherwise drop it
@@ -3468,9 +3507,8 @@ local function mirrorActive(which)
   return false
 end
 
--- ns.ReadState(): the single read-only source of truth for the resolver, the grid, and the
--- debug panel. NO side effects (no RNG, no SetAttribute) — safe to call from the poll AND the
--- panel. (Was the spike's local `rawFooting`.)
+-- ns.ReadState(): the single read-only source of truth for the resolver. NO side effects (no RNG,
+-- no SetAttribute), so it is safe to call from the poll or anywhere else.
 function ns.ReadState()
   -- GetUnitSpeed is a SECRET number in combat (Midnight) — comparing it taints/errors,
   -- so guard with issecretvalue and report movement as unknown while in combat.
@@ -3557,7 +3595,7 @@ function ns.ReadState()
   r.lootReady = r.channeling
   r.castReady = r.canCast and not r.channeling and not r.combat
   -- single-button: the action key is ALSO the attack key, so when a combat action is configured
-  -- the loop should keep firing in combat (it attacks) rather than hold. Exposed for the grid.
+  -- the loop should keep firing in combat (it attacks) rather than hold. Exposed for readers of the state.
   local combatDef = SBF.SlotDef("combat")
   r.combatReady = (not (combatDef and combatDef.skip)) and hasAction(combatDef) and true or false
   return r
@@ -3674,16 +3712,16 @@ SlashCmdList.SBF = function(msg)
     if SBF.ShowBugReport then SBF.ShowBugReport(rest ~= "" and rest or nil) end
   elseif cmd == "reach" then                                  -- PUBLIC: interact-key range while fishing
     local v = rest:lower()
-    if v == "off" then SBFDB.bobberReach = 0
-    elseif v == "default" or v == "" then SBFDB.bobberReach = nil
+    if v == "off" then SBFDB.bobberReach = 0; if SBF.RestoreBobberReach then SBF.RestoreBobberReach() end
+    elseif v == "default" then SBFDB.bobberReach = nil        -- bare /sbf reach just prints the current value
     elseif tonumber(v) then SBFDB.bobberReach = math.max(0, math.floor(tonumber(v))) end
     print(("|cff45c4a0SBF bobber reach|r: %s  |cff808080(/sbf reach <yards> | off | default)|r"):format(
       (SBFDB.bobberReach == nil and "default (60 on Forever/Classic, off on retail)")
       or (SBFDB.bobberReach == 0 and "off - your interact range is left alone") or (SBFDB.bobberReach .. " yards while fishing")))
   elseif cmd == "reachzoom" then                              -- PUBLIC: minimum camera distance while fishing
     local v = rest:lower()
-    if v == "off" then SBFDB.reachZoom = 0
-    elseif v == "default" or v == "" then SBFDB.reachZoom = nil
+    if v == "off" then SBFDB.reachZoom = 0; if SBF.RestoreFishingZoom then SBF.RestoreFishingZoom() end
+    elseif v == "default" then SBFDB.reachZoom = nil          -- bare /sbf reachzoom just prints the current value
     elseif tonumber(v) then SBFDB.reachZoom = math.max(0, tonumber(v)) end
     print(("|cff45c4a0SBF fishing zoom|r: %s  |cff808080(/sbf reachzoom <distance> | off | default)|r"):format(
       (SBF.ReachZoom and SBF.ReachZoom() or 0) > 0 and ("at least " .. SBF.ReachZoom() .. " while fishing") or "off"))
