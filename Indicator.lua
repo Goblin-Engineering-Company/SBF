@@ -44,6 +44,36 @@ local function cfg()
   for _, row in ipairs(c.auras or {}) do
     if row.spellID == 1299580 then row.id = row.id or "clw"; row.content = row.content or MN_S2 end
   end
+  -- Patiently Rewarded as a watch row (World tab) - glow + announce + sound, matched by BUFF NAME (its identity is
+  -- the editable SBFDB.prBuffName). Seeding migrates the old Audio-feedback sound config into the row and silences
+  -- the old consumer (SBFDB.prSound=false - SetupPRWatch's sound gates on it). It has its OWN switch
+  -- (ownSwitch): the zone glow toggle in Settings never turns it off, just as it never did the old sound.
+  do
+    local have
+    for _, row in ipairs(c.auras) do if row.id == "pr" then have = true break end end
+    if not have then
+      c.auras[#c.auras + 1] = {
+        id = "pr",
+        buffName = (SBFDB.prBuffName and SBFDB.prBuffName ~= "" and SBFDB.prBuffName) or "Patiently Rewarded",
+        label = "Patiently Rewarded", note = "a chest has spawned - claim your reward",
+        color = { 1.0, 0.85, 0.25 },   -- gold
+        soundOn = SBFDB.prSound and true or false,
+        soundMode = SBFDB.prSoundMode or "file",
+        soundId = SBFDB.prSoundId or 8960,
+        soundFile = SBFDB.prSoundFile,
+        content = { expansion = "Midnight" },   -- ALL of Midnight, no season/zone: PR procs expansion-wide
+        ownSwitch = true,
+      }
+      SBFDB.prSound = false
+    end
+    for _, row in ipairs(c.auras) do
+      if row.id == "pr" then
+        -- the first seed (2026.09.08.3) tagged PR season 2; it's expansion-wide
+        if row.content and row.content.season then row.content = { expansion = "Midnight" } end
+        row.ownSwitch = true
+      end
+    end
+  end
   -- SEEDED-TEXT MIGRATION (the answer to the seed caveat at the top of this function, and to the "Captain
   -- Taka" episode: a fixed default never reaches a config that already exists). Bump TEXT_REV whenever a
   -- seeded label/note changes, and add the corrected strings here keyed by row id; every existing config
@@ -53,6 +83,7 @@ local function cfg()
   local TEXT_REV = 2
   if (c.textRev or 1) < TEXT_REV then
     local fixes = {}   -- row id -> { label, note }
+    fixes.pr = { label = "Patiently Rewarded",  note = "a chest has spawned - claim your reward" }
     for _, list in ipairs({ c.auras, c.vignettes }) do
       for _, row in ipairs(list or {}) do
         local f = row.id and fixes[row.id]
@@ -73,6 +104,19 @@ end
 -- take effect immediately and persist - they're the SavedVariables tables themselves).
 function SBF.ZoneWatches() return cfg() end
 
+-- play a watch row's configured sound. `force` = the Settings Test/preview click (plays even when the row's
+-- sound is off, so picking a sound always lets you hear it).
+function SBF.PlayZoneWatchSound(row, force)
+  if not row then return end
+  if row.soundOn == false and not force then return end
+  if row.soundMode == "file" and row.soundFile then
+    pcall(PlaySoundFile, row.soundFile, "Master")
+  else
+    pcall(PlaySound, row.soundId or 8959, "Master")
+  end
+end
+
+-- (SBF.PreviewZoneWatch lives below, after the frame/paint machinery it uses.)
 
 local frame, edges, pulseGroup
 
@@ -135,9 +179,38 @@ local function paint(color)
   end
 end
 
+-- the World tab's Test click: show the row's GLOW for a few seconds (plus its sound, forced), then hand the
+-- screen back to reality via a normal refresh (which repaints the true state or hides). Runs even with the
+-- master off - an explicit test click should always show what the row would look like. Overlapping tests
+-- just restart the timer; the token ignores a stale timer firing after a newer preview began.
+local previewToken = 0
+function SBF.PreviewZoneWatch(row)
+  if not row then return end
+  SBF.PlayZoneWatchSound(row, true)
+  build(); layout(); paint(row.color)
+  frame:Show()
+  previewToken = previewToken + 1
+  local mine = previewToken
+  local secs = (ns.numOrDefault and ns.numOrDefault(cfg().previewSecs, 3)) or 3
+  C_Timer.After(secs, function()
+    -- silent restore: clears the preview without announcing, and works mid-combat (a plain refresh is
+    -- held during combat, which would strand the preview glow on screen until the fight ended)
+    if mine == previewToken and SBF.ZoneIndicatorRefresh then SBF.ZoneIndicatorRefresh(true) end
+  end)
+end
 
--- announce helper: raid-warning + chat line in the row's own color
+-- SEEDING (login / reload): the first read after entering the world takes every row's CURRENT state as the
+-- baseline without announcing, so a buff that was already up before a /reload (or a relog) is not "new" again.
+local seeding = false
+local seedHeld = false       -- a login / reload baseline that combat held back; the next real read takes it
+local seedUntil = 0          -- GetTime() until which refreshes only baseline (auras keep arriving for a moment after
+                             -- entering the world, so one read is not enough)
+-- announce helper: raid-warning + chat line in the row's own color, plus the row's sound when it has one set up.
+-- This is THE rising edge of a watch, so it also tells anyone listening (SBF.OnZoneWatchUp: Core logs the
+-- Patiently Rewarded chest drop from it, once per proc, through the same combat hold as the glow).
 local function announce(row, msg)
+  if seeding then return end
+  if SBF.OnZoneWatchUp then pcall(SBF.OnZoneWatchUp, row) end
   local col = row.color or { 1, 1, 1 }
   local r, g, b = col[1] or 1, col[2] or 1, col[3] or 1
   if RaidNotice_AddMessage and RaidWarningFrame and ChatTypeInfo then
@@ -145,6 +218,7 @@ local function announce(row, msg)
   end
   print("|cff45c4a0SBF|r " .. ("|cff%02x%02x%02x"):format(
     math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5)) .. msg .. "|r")
+  if row.soundMode ~= nil then SBF.PlayZoneWatchSound(row) end   -- a row with no sound configured stays silent
 end
 
 -- is an aura row's condition live on the player? spellID rows use the direct (secrecy-proof) lookup;
@@ -185,12 +259,17 @@ end
 function SBF.ZoneIndicatorRefresh(silent)
   local c = cfg()
   local enabled = c.enabled
-  if combatHeld() and not silent then return end
+  if combatHeld() and not silent then
+    if GetTime() < seedUntil then seedHeld = true end   -- the baseline read was held: do it on the first real read
+    return
+  end
+  seeding = (not silent) and (GetTime() < seedUntil or seedHeld)
+  if seeding then seedHeld = false end
   local paintRow = nil
   -- Every row gets its own rising-edge announce, even when another row wins the paint. Falling edges are
   -- deliberately SILENT (leaving an area must not false-positive). Rows paint in seed order.
   for _, row in ipairs(c.auras or {}) do
-    local up = (enabled and row.enabled ~= false and auraRowUp(row)) or false
+    local up = ((enabled or row.ownSwitch) and row.enabled ~= false and auraRowUp(row)) or false
     local k = rowKey(row)
     if up and not latch[k] and not silent then
       announce(row, (row.label or "Zone buff") .. (row.note and (" - " .. row.note) or ""))
@@ -200,6 +279,7 @@ function SBF.ZoneIndicatorRefresh(silent)
   end
   -- a silent restore that lands mid-combat must not let an unreadable state blank a glow that is really
   -- still up: keep painting whatever was painted when the hold began.
+  seeding = false
   if silent and combatHeld() then paintRow = paintedRow end
   paintedRow = paintRow
   if paintRow then
@@ -219,7 +299,10 @@ local ev = CreateFrame("Frame")
 ev:RegisterUnitEvent("UNIT_AURA", "player")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")   -- combat ended: re-read once, now that the reads are trustworthy
-ev:SetScript("OnEvent", function(_, event, msg)
+ev:SetScript("OnEvent", function(_, event, msg, reloading)
+  if event == "PLAYER_ENTERING_WORLD" and (msg or reloading) then                         -- login / reload: baseline
+    seedUntil = GetTime() + ((ns.numOrDefault and ns.numOrDefault(cfg().seedSecs, 3)) or 3)
+  end
   if event == "PLAYER_REGEN_ENABLED" then
     -- next frame: UnitAffectingCombat can still read true on this one, which would hit the combat hold
     -- and skip the very re-read this event exists to trigger.

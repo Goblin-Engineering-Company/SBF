@@ -8,11 +8,24 @@ No more opening bags mid-cast. No more realizing your lure expired twenty casts 
 
 It handles combat and healing for those pesky Blood Hunters with that same key.
 
+Runs on retail and WoW: Forever from the same download.
+
+## Now on World of Warcraft: Forever
+
+SBF runs on WoW: Forever, the same download as retail. One key still does it all, with the old world's rules built in:
+
+- **Your pole goes in your main hand.** Forever has no profession tool slot, so SBF swaps your pole in when you fish and puts your real weapon and off-hand back when you stop. Equipment sets work too.
+- **Catches count as catches.** The classic Fishing spell is recognized, so every fish lands in your log and stats, and your Fishing skill shows up in the header and on the Skill Book tab.
+- **Bobber reach that fails fast.** Some Forever casts land farther out than your interact key can grab. SBF stretches the key's reach while you fish, and when a bobber still lands too far, it notices within about a second and turns your next press into a fresh cast. Out-of-reach casts get their own line on the Stats tab and never count against your catch rate.
+- **Combat still swings back.** Forever has no Single-Button Assistant, so the default combat action is plain auto-attack. Drag in your own macro any time.
+
+Install it the same way: drop the `SBF` folder into the Forever game folder's `Interface/AddOns`.
+
 ## What it handles for you
 
 - **The cast loop**: cast, catch, recast, on one keybind (secure, Blizzard-legal buttons, no automation, one action per press, always).
 - **Buffs and consumables**: lures, bobbers, food, and drink are managed as a rotation. Whatever's missing or expired gets refreshed on your next press, then it's straight back to fishing. Items you own and spells you know are detected automatically.
-- **Gear swapping**: switch into your fishing setup and back out again without touching the character pane. Leave the pole slot empty and SBF fills it with the pole you're wearing, so there's nothing to set up by hand.
+- **Gear swapping**: switch into your fishing setup and back out again without touching the character pane. The pole in your profile's Fishing pole box is the only one SBF puts on. Leave the box empty and SBF uses the pole saved in your gear set, or on retail the pole in your fishing tool slot, so there's usually nothing to set up by hand.
 - **Ultra-fast looting, when you want it**: turn it on in Settings and catches are scooped the moment the loot window appears. It ships off, because plenty of people like seeing what they pulled up. Everything is configurable.
 - **Combat safety**: everything defers politely when combat starts and picks back up when it ends.
 
@@ -20,7 +33,7 @@ It handles combat and healing for those pesky Blood Hunters with that same key.
 
 - **A fishing journal**: every cast and its outcome (caught, empty line, expired, missed, interrupted) is logged with the zone you were in. Browse your history in the Log tab.
 - **A stats page**: all-time totals plus your current session. Casts, catches, catch rate, fish per hour, time fished.
-- **A skill book**: your fishing skill per expansion, across all your characters.
+- **A skill book**: your fishing skill (per expansion on retail), across all your characters.
 - **A learned item catalog**: SBF learns the buff, duration, and cooldown of every fishing item it sees you use, and gets smarter about your rotation as you play.
 
 ## Profiles

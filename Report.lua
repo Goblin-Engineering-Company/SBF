@@ -395,8 +395,8 @@ function SBF.BugReport(note)
     -- report means the assert itself is failing - also worth knowing.
     local sti = (C_CVar and C_CVar.GetCVar and C_CVar.GetCVar("softTargetInteract")) or "?"
     out[#out + 1] = ("          softTargetInteract=%s (3=always; two-button looting needs 3)"):format(tostring(sti))
-    -- the loot key is NOT a native binding - it exists only as an override SBF applies (see the trace in
-    -- auto-memory). "no key bound" or "->|NONE|" on the interact line IS the dead-loot-key report.
+    -- the loot key is NOT a native binding - it exists only as an override SBF applies.
+    -- "no key bound" or "->|NONE|" on the interact line IS the dead-loot-key report.
     -- GECBind is a FILE-LOCAL in every consumer, never a global — reading it here was always nil, so this
     -- printed 0 forever and fired the "looting cannot work" alarm on healthy installs. SBF.NativeKeys
     -- (Core.lua) closes over the real local and is the shipping accessor.

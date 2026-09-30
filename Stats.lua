@@ -146,6 +146,8 @@ local function accumulate(roll, e)
     if not roll.lastT or e.t > roll.lastT then roll.lastT = e.t end   -- max(): robust even for an unordered slice
   end
   if e.dur then roll.totalDur = roll.totalDur + e.dur end   -- line-in-water time
+  -- the out-of-reach recasts' share of that time, so "avg cast" can leave them out like it leaves out their count
+  if k == "unreachable" and e.dur then roll.unreachDur = (roll.unreachDur or 0) + e.dur end
   -- coarse continent/zone bucket (Unknown bucket when the place can't be resolved)
   local zoneKey, cont, zone = Stats.CoarsePlace(GECStore.PlaceInfo(e.p))
   local z = ensureZone(roll, zoneKey, cont, zone)
@@ -186,6 +188,7 @@ local function mergeRollup(dst, src)
   for cause, n in pairs(src.interrupts or {}) do dst.interrupts[cause] = (dst.interrupts[cause] or 0) + n end
   dst.totalDur = (dst.totalDur or 0) + (src.totalDur or 0)
   if src.oor then dst.oor = (dst.oor or 0) + src.oor end   -- out-of-reach casts (every field accumulate() writes)
+  if src.unreachDur then dst.unreachDur = (dst.unreachDur or 0) + src.unreachDur end
   if src.firstT and (not dst.firstT or src.firstT < dst.firstT) then dst.firstT = src.firstT end
   if src.lastT and (not dst.lastT or src.lastT > dst.lastT) then dst.lastT = src.lastT end
   for id, sit in pairs(src.items or {}) do
@@ -259,7 +262,7 @@ function Stats.EnsureBackfill()
   -- copy the seed's fields into the persistent table (its sub-tables are fresh, so they become persistent)
   roll.v, roll.firstT, roll.lastT, roll.totalDur = seed.v, seed.firstT, seed.lastT, seed.totalDur
   roll.kinds, roll.items, roll.zones = seed.kinds, seed.items, seed.zones
-  roll.oor = seed.oor
+  roll.oor, roll.unreachDur = seed.oor, seed.unreachDur
   roll.backfilled = true
 end
 

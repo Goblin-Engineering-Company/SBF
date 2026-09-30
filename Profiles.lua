@@ -158,6 +158,7 @@ function SBF.LoadWorking(id)
     slots    = deepcopy(p.slots),
     equipSet = pg.equipSet,
     pole     = pg.pole,
+    poleCleared = pg.poleCleared,      -- the player emptied the pole box on purpose: never auto-fill it again
     dirty    = false,
   }
   SBF.working = DB.working             -- engine reads SBF.working; SavedVariables auto-persists DB.working
@@ -177,6 +178,7 @@ function SBF.SaveWorking()
   local pg = SBF.ProfileGear(w.id)             -- gear commits to the per-character store, not the profile
   pg.equipSet = w.equipSet
   pg.pole     = w.pole
+  pg.poleCleared = (w.pole == nil and w.poleCleared) or nil
   -- p.bindings deliberately untouched: bindings commit instantly and never live in the working copy
   w.dirty = false
 end
@@ -374,7 +376,7 @@ function SBF.AddProfile(name, fromId)
   }
   -- gear is per-character: copy THIS character's gear for the source profile into the new profile's gear
   local sg, ng = SBF.ProfileGear(fromId), SBF.ProfileGear(id)
-  ng.equipSet, ng.pole = sg.equipSet, sg.pole
+  ng.equipSet, ng.pole, ng.poleCleared = sg.equipSet, sg.pole, sg.poleCleared
   return id
 end
 
@@ -562,7 +564,7 @@ function SBF.SaveWorkingAsNewBound()
   local id = SBF.AddProfile(baseName .. (leaf and (" @ " .. leaf.name) or ""))
   DB.profiles[id].slots    = deepcopy(w.slots)
   local ng = SBF.ProfileGear(id)
-  ng.equipSet, ng.pole = w.equipSet, w.pole
+  ng.equipSet, ng.pole, ng.poleCleared = w.equipSet, w.pole, (w.pole == nil and w.poleCleared) or nil
   if leaf then SBF.AddBinding(id, leaf.name, leaf.kind, leaf.mapID) end   -- no leaf (shouldn't happen): create unbound, keep edits
   SBF.RevertWorking()                       -- restore the profile we were editing to its saved state
   return id
@@ -579,7 +581,7 @@ function SBF.SaveWorkingAsNew(name)
   -- AddProfile copies from the STORED source profile, but we want the WORKING (dirty) edits — so overwrite:
   DB.profiles[id].slots    = deepcopy(w.slots)
   local ng = SBF.ProfileGear(id)
-  ng.equipSet, ng.pole = w.equipSet, w.pole
+  ng.equipSet, ng.pole, ng.poleCleared = w.equipSet, w.pole, (w.pole == nil and w.poleCleared) or nil
   SBF.RevertWorking()   -- restore the edited (Default) profile to its saved/clean state
   return id
 end

@@ -174,7 +174,8 @@ local DB_DEFAULTS = {
                         -- or jumpKeyState off): min time a JUMP is held before it can be replaced so its key-UP lands.
   winPos = nil,         -- saved options-window position { point, x, y }
   poleSlot = 28,        -- inventory slot of the fishing tool (for pole-enchant checks + pole equip)
-  autoAddPole = true,   -- on first setup (empty pole config), pull in the currently-equipped fishing pole
+  autoAddPole = true,   -- RETAIL only: an empty pole box picks up the pole in your fishing tool slot, until you clear
+                        -- the box yourself. WoW: Forever never fills it from what you wear (Gear.lua AutoPopulatePole).
   -- gear snapshot + "in fishing gear" flag are PER-CHARACTER now: SBFDB.charGear[name-realm].{snapshot,on}
   -- (see Gear.lua SBF.CharGear). The old account-wide gearSnapshot/profileGearOn are migrated then dropped.
   idleRestoreEnabled = true,  -- ON by default: after this long with no action press, auto-restore your normal gear
@@ -303,8 +304,7 @@ end
 -- A secure button fires its protected action on key-DOWN or key-UP per the ActionButtonUseKeyDown CVar; a
 -- fixed "AnyUp" silently DROPS the cast on key-down clients (the long "won't cast on the new account" bug).
 -- GECBind.RegisterSecureClicks owns this now — it registers the matching edge AND keeps the button re-synced
--- on CVAR_UPDATE for the life of the session. NEVER hardcode RegisterForClicks on a secure cast button. (See
--- CLAUDE.md "Secure buttons" + auto-memory.)
+-- on CVAR_UPDATE for the life of the session. NEVER hardcode RegisterForClicks on a secure cast button.
 local function EnsureButton(key)
   if buttons[key] then return buttons[key] end
   local b = CreateFrame("Button", "SBFBtn_" .. key, UIParent, "SecureActionButtonTemplate")
@@ -667,7 +667,7 @@ end
 -- caching, warming, and updates (GECStore.ProfessionsWarmed() reports live-vs-cached; the header colors on it),
 -- and .lines[lineID] is nil when the char has no skill in that line. The MODIFIER (green +gear/lure boost) is
 -- SBF-owned and gear-derived — the library doesn't carry it — so SBF reads it live and only when the data is
--- warm (0 otherwise; the full gear-derived boost catalog is future work, [[sbf-effective-fishing-skill]]).
+-- warm (0 otherwise; the full gear-derived boost catalog is future work).
 -- WoW: Forever / Classic have ONE Fishing skill on the old base line 356 (probed 2026-09-23: 356 = "Fishing 75/75",
 -- the per-expansion lines 2592/2591/... answer 0/0), so SBF.FishingLine() is 356 there and the zone's expansion line
 -- on retail. The header readout, the {sbf.fishing} data token and the Skill Book all read it through here.
@@ -1603,7 +1603,7 @@ local function logFishEvent(kind, extra, dur)
   end
   -- uiMapID the x/y are relative to (the SAME GetBestMapForUnit the position getter reads). Stored so a record
   -- is self-contained for later MAP PINS: (m, x/100, y/100) → an exact world position, no place-cascade lookup
-  -- needed. Casts are stationary, so this matches the coords captured a beat earlier. See [[node-map-data]].
+  -- needed. Casts are stationary, so this matches the coords captured a beat earlier.
   if C_Map and C_Map.GetBestMapForUnit then
     local mid = C_Map.GetBestMapForUnit("player")
     if mid then e.m = mid end
@@ -2392,7 +2392,12 @@ function SBF.Apply()
       -- GearNeedsEquip returns false for a profile with no equipSet and no pole — precisely the empty case we
       -- need to fix. A hook inside applyProfileGear is unreachable exactly when it matters. Running it first
       -- also means the gate below sees the pole we just adopted and can equip it on this same press.
-      if SBF.working and not SBF.working.pole and SBF.AutoPopulatePole then SBF.AutoPopulatePole() end
+      -- An empty pole box: first the pole saved IN the profile's gear set (the player's choice), then on retail the pole
+      -- in the fishing tool slot (until the player clears the box). Forever never fills from what you wear (with two
+      -- poles SBF can't know which you meant): the box stays empty and SBF says so once per session.
+      if SBF.working and not SBF.working.pole and not (SBF.AdoptSetPole and SBF.AdoptSetPole())
+          and not (SBF.AutoPopulatePole and SBF.AutoPopulatePole())
+          and SBF.NoteMissingPole then SBF.NoteMissingPole() end
 
       -- Gear gate — HIGHEST PRIORITY, the very first thing a press does. If the active profile's gear/pole
       -- isn't currently on, THIS press changes gear and does NOT fish (you can't swap gear and start the
@@ -2949,14 +2954,20 @@ function SBF.SetupPRWatch()
   else
     SBF._prWatch = SBF.WatchBuff({
       name = name,
-      onAppear = function(d)
-        if SBFDB.prSound then
-          SBF.PlayPRSound()
-          logFishEvent("buff", { name = (d and d.name) or "Patiently Rewarded" })   -- also drop it in the log
-        end
+      onAppear = function()
+        -- the alert itself (and its log line) is the World tab's Patiently Rewarded row (Indicator.lua, below); this
+        -- old sound only plays for a config that still has it switched on.
+        if SBFDB.prSound then SBF.PlayPRSound() end
       end,
     })
   end
+end
+
+-- The Patiently Rewarded chest drop is logged from the World tab row's rising edge (Indicator.lua announce). That
+-- edge already holds through combat (an aura read in combat can come back empty) and baselines on login / reload,
+-- so a proc is logged once, not again after every fight or /reload (QC 2026-09-30).
+function SBF.OnZoneWatchUp(row)
+  if row and row.id == "pr" then logFishEvent("buff", { name = row.buffName or row.label or "Patiently Rewarded" }) end
 end
 
 -- Feedback when an auto-swap loads a new profile: flash the profile's name as a raid warning
@@ -3142,6 +3153,9 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     -- increment 3: seq-identity rebaseline (coordinated rollout) — streams restart born-with-seq.
     migrateSeqRebaseline()
     ApplyDefaults(SBFDB, DB_DEFAULTS)
+    -- one-time: 2026.09.30.1 turned the pole auto-fill off for everyone; it is back ON for retail (Forever never
+    -- fills, by rule in AutoPopulatePole), so undo that once. There is no UI for it, so nobody chose "off".
+    if not SBFDB._poleFillRetail then SBFDB.autoAddPole = true; SBFDB._poleFillRetail = true end
     SBFDB.themePreset = SBFDB.themePreset or "everforest"  -- GECTheme per-addon palette (default = everforest)
     -- Un-strand the options window if we reloaded / disconnected DURING combat while the watcher had auto-hidden
     -- or auto-collapsed it: the auto-collapse persists SBFDB.collapsed through the window lib, but the transient
@@ -3221,7 +3235,7 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
         -- the LoadWorking branch below already routes gear through ProfileGear, so only the adopt path needs this.)
         if SBF.ProfileGear then
           local pg = SBF.ProfileGear(pdb.working.id)
-          SBF.working.equipSet, SBF.working.pole = pg.equipSet, pg.pole
+          SBF.working.equipSet, SBF.working.pole, SBF.working.poleCleared = pg.equipSet, pg.pole, pg.poleCleared
         end
       elseif SBF.LoadWorking then
         SBF.working = nil
@@ -3710,6 +3724,20 @@ SlashCmdList.SBF = function(msg)
   elseif cmd == "bug" or cmd == "bugreport" then              -- PUBLIC: copyable, PII-free diagnostic blob.
     -- `rest` is already everything after the command word: the reporter's description, included verbatim.
     if SBF.ShowBugReport then SBF.ShowBugReport(rest ~= "" and rest or nil) end
+  elseif cmd == "venom" then                                  -- PUBLIC: the worn pole's counter (The Coiled Huntress)
+    local n, word; if SBF.PoleCounter then n, word = SBF.PoleCounter() end
+    local fil = SBF.CoiledFilament and SBF.CoiledFilament()
+    if n then
+      print(("|cff45c4a0SBF|r %s: |cffffd100%d|r  (+%d this session)   Coiled Filament: %s"):format(word or "Venom", n,
+        SBF.PoleCounterSession() or 0, tostring(fil or 0)))
+    else
+      if SBF.CLASSIC_GEAR then
+        print("|cff45c4a0SBF|r No pole counter on this client.")
+      else
+        print("|cff45c4a0SBF|r The pole you're wearing doesn't carry a counter (The Coiled Huntress does).   Coiled Filament: "
+          .. tostring(fil or 0))
+      end
+    end
   elseif cmd == "reach" then                                  -- PUBLIC: interact-key range while fishing
     local v = rest:lower()
     if v == "off" then SBFDB.bobberReach = 0; if SBF.RestoreBobberReach then SBF.RestoreBobberReach() end

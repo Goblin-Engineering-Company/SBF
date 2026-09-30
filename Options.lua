@@ -236,6 +236,7 @@ local function Build()
   panel:Hide()
 
   -- Right-aligned readout in the window header band (left of the close X): "Skill: 300/300 (+116)   Perc: 200"
+  -- (+ "Venom: 406" in dark green when the worn pole carries a counter, Venom.lua)
   -- — the skill's +bonus in green (SBF.GetFishing), the perception total in gold (SBF.GetPerception). Location-
   -- aware; refreshes on skill/lure changes, zone changes, aura changes, gear/enchant swaps, and on show. Shows
   -- even while collapsed (the header stays), so you always see your skill + perception.
@@ -274,6 +275,10 @@ local function Build()
     end
     local perc = SBF.GetPerception and SBF.GetPerception() or 0
     if perc and perc > 0 then parts[#parts + 1] = "Perc: |cffffd100" .. perc .. "|r" end
+    -- the worn pole's counter (The Coiled Huntress: Venom), in dark green, only when the pole carries one
+    local vn, vword
+    if SBF.PoleCounter then vn, vword = SBF.PoleCounter() end
+    if vn then parts[#parts + 1] = (vword or "Venom") .. ": |cff2e9e4a" .. vn .. "|r" end
     local text = table.concat(parts, "   ")
     fishFS:SetText(text)
     fishFS:SetWidth(text == "" and FISH_READOUT_RESERVE or 0)   -- 0 = auto-size to the real readout
@@ -291,6 +296,8 @@ local function Build()
     if event == "UNIT_AURA" and unit ~= "player" then return end
     if panel:IsShown() then updateFishingReadout() end
   end)
+  -- the pole's Venom counter: Venom.lua samples it after every catch and says when it moved
+  SBF.OnPoleCounterChanged = function() if panel:IsShown() then updateFishingReadout() end end
   -- also refresh on the library's skill-up feed (in addition to the raw events above); the cache warms/updates
   -- on the backend and this repaints the readout (e.g. gray->white when the professions data first warms).
   do
@@ -336,6 +343,7 @@ local function Build()
     { key = "skillbook", label = "Skill Book" },
     { key = "log",      label = "Log" },
     { key = "stats",    label = "Stats" },
+    { key = "world",    label = "World" },   -- expansion/season content watches (Patiently Rewarded, ...)
     { key = "about",    label = "About" },
   }
   -- Theme.Window's `content` frame already STARTS below its 34px header band, so the tabs/pages anchor from
@@ -343,12 +351,25 @@ local function Build()
   -- -42 / -76 double-counted the header band (the content used to be SetAllPoints(panel)), which is what
   -- left the big header→tabs gap after the Theme.Window swap.
   tabSetActive = Theme.TabStrip(content, 12, -8, tabDefs, ShowTab)   -- returns setActive(key); ShowTab drives highlighting
+  -- The tab strip's own width is a window floor too: shrinking below it pushed the last tab (About) out past the
+  -- window's right edge. Measured with the lib's own tab sizing (max(64, label + 2*18) each, 2px apart, x=12),
+  -- plus the same 12px right margin the strip's separator keeps. A new tab widens the floor on its own.
+  do
+    local fs = content:CreateFontString(nil, "OVERLAY", "GameFontNormal"); fs:Hide()
+    local w = 12 + 12
+    for i, d in ipairs(tabDefs) do
+      fs:SetText(d.label)
+      w = w + math.max(64, (fs:GetStringWidth() or 0) + 36) + (i > 1 and 2 or 0)
+    end
+    panel._tabsMinW = math.ceil(w)
+  end
   local function makePage()
     local p = CreateFrame("Frame", nil, content)
     p:SetPoint("TOPLEFT", 12, -44); p:SetPoint("BOTTOMRIGHT", -12, 38)   -- -44 = tab y(8) + tab h(~30) + gap(~6)
     p:Hide(); return p
   end
   pages.buttons, pages.behavior, pages.log = makePage(), makePage(), makePage()
+  pages.world = makePage()
   pages.keys = makePage()
   pages.stats = makePage()
   pages.skillbook = makePage()
@@ -849,8 +870,7 @@ local function Build()
     -- (e.g. Default) there's nothing to put on or restore, so just open the manager without the flag.
     local w = SBF.working
     if w and (w.equipSet or w.pole) and SBF.EquipProfileGear then
-      SBF.EquipProfileGear()
-      SBF._emEditing = true
+      SBF.EquipForEdit()
     end
     -- "Is the pane open?" must test CharacterFrame, NOT PaperDollFrame — PaperDollFrame's own shown-flag can
     -- read true even while its parent CharacterFrame is closed, which previously made us skip ToggleCharacter
@@ -900,8 +920,7 @@ local function Build()
       if InCombatLockdown() then return end
       local w = SBF.working                                -- same edit-session setup as emBtn's OnClick
       if w and (w.equipSet or w.pole) and SBF.EquipProfileGear then
-        SBF.EquipProfileGear()
-        SBF._emEditing = true
+        SBF.EquipForEdit()
       end
       local open = CharacterFrame and CharacterFrame:IsShown()
       -- Forever's character sheet has a collapsible right pane, and the Equipment Manager tab (PaperDollSidebarTab3)
@@ -1006,8 +1025,13 @@ local function Build()
   poleBtn.icon = poleBtn:CreateTexture(nil, "ARTWORK"); poleBtn.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
   poleBtn.icon:SetPoint("TOPLEFT", 2, -2); poleBtn.icon:SetPoint("BOTTOMRIGHT", -2, 2)
   poleBtn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+  -- shown only while the box is empty: SBF equips no pole until the player picks one (it never guesses)
+  local poleWarn = pBtn:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  poleWarn:SetPoint("LEFT", poleBtn, "RIGHT", 8, 0)
+  poleWarn:SetText("|cffff9933No pole set.|r Drag your pole here, or save it in this profile's gear set.")
+  poleWarn:Hide()
   local function setPole(id)
-    if SBF.working then SBF.working.pole = id; markDirty() end
+    if SBF.working then SBF.working.pole = id; SBF.working.poleCleared = (id == nil) or nil; markDirty() end
     if refreshGear then refreshGear() end
   end
   poleBtn:SetScript("OnReceiveDrag", function()
@@ -1025,13 +1049,22 @@ local function Build()
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     local pole = SBF.working and SBF.working.pole
     if pole then GameTooltip:SetItemByID(pole)
-    else GameTooltip:SetText("Fishing pole", accentRGB()); GameTooltip:AddLine("Drag a pole here to equip it with this profile; right-click to clear.", 0.85, 0.85, 0.85, true) end
+    else
+      GameTooltip:SetText("Fishing pole", accentRGB())
+      GameTooltip:AddLine(SBF.CLASSIC_GEAR
+        and "No pole set. SBF uses the pole saved in this profile's gear set if it has one, otherwise none. Drag the pole you want here."
+        or "No pole set. SBF picks up the pole saved in this profile's gear set, or the pole you're wearing, unless you cleared the box yourself. Drag the pole you want here.",
+        0.85, 0.85, 0.85, true)
+    end
     GameTooltip:Show()
   end)
   poleBtn:SetScript("OnLeave", GameTooltip_Hide)
   labelHover(plbl2, 70, "Fishing pole", "The pole this profile equips (" .. (SBF.CLASSIC_GEAR
     and "into your main hand, replacing your weapon until you stop fishing" or "into the profession tool slot")
-    .. ") on the first action press after switching. Leave it empty and SBF fills it with the pole you're wearing, so you never have to set it by hand. Once it's set, this profile keeps it: put a different pole on and your choice here is left alone. Drag a pole here to change it, right-click to clear and pick up whatever you're wearing.")
+    .. ") on the first action press after switching. It is the only pole SBF puts on. " .. (SBF.CLASSIC_GEAR
+    and "Leave the box empty and SBF uses the pole saved in this profile's gear set, if the set has one; otherwise it equips no pole and tells you."
+    or "Leave the box empty and SBF picks up the pole saved in this profile's gear set, or the pole you're wearing. Right-click to clear it on purpose and it stays empty.")
+    .. " Drag a pole here to set it, right-click to clear.")
 
   -- separator under the fishing-pole row, dividing the gear block from the slot list below (matches the
   -- other separators' faint-white style/width). The scroll frame's top (GEAR_BLOCK_H) sits just under it.
@@ -1046,6 +1079,7 @@ local function Build()
     local pole = w and w.pole
     local tex = pole and (select(5, GetItemInfoInstant(pole)))
     poleBtn.icon:SetTexture(tex or ""); poleBtn.icon:SetShown(tex ~= nil)
+    poleWarn:SetShown(SBF.CLASSIC_GEAR and w ~= nil and not pole)   -- retail fills the box from the tool slot
   end
 
   -- (The active-profile "Active: <name>" indicator moved UP to the window header — headerProfileFS, created
@@ -1420,11 +1454,125 @@ local function Build()
     }
   end
 
-  -- The Settings page's zone-watch rows under the glow switch (none in this build: the glow switch alone).
+  -- The Settings page's zone-watch rows under the glow switch: none, the rows live on the World tab.
   local zgRowSpecs = {}
+  -- ---- Watch rows (World tab): per-row enable + glow-color swatch + sound + Test ----
+  -- Rows render straight from the LIVE config tables (SBF.ZoneWatches - the SavedVariables themselves), so
+  -- a new watch added to the seed shows up here with no UI work. Row edits apply instantly (refresh call)
+  -- and persist. Built once per window build; the list only changes via a code seed, so that's enough.
+  -- Parameterized by PARENT because the rows have two possible homes: the Settings page (the shipped
+  -- location today) or any other page that wants them grouped by each row's content tag.
+  -- Returns ORDERED GROUPS: { { key, header, specs = {rowSpec, ...} }, ... } grouped by content
+  -- expansion+season; a caller that wants a flat list concatenates the specs.
+  local function buildZoneRows(parent)
+    local zw = SBF.ZoneWatches and SBF.ZoneWatches()
+    local full = SBF.ZoneWatchesFull and SBF.ZoneWatchesFull()
+    local list = {}
+    -- Patiently Rewarded always has its row here; the zone glow's own row joins it in the full watch set.
+    for _, r in ipairs((zw and zw.auras) or {}) do if full or r.id == "pr" then list[#list + 1] = r end end
+    for _, r in ipairs((full and zw and zw.vignettes) or {}) do list[#list + 1] = r end
+    local function refreshInd() if SBF.ZoneIndicatorRefresh then SBF.ZoneIndicatorRefresh() end end
+    -- COLUMN ALIGNMENT (same trick as the Audio-feedback sound rows): give every row's check cell one fixed
+    -- width = the widest label across ALL rows, so the swatch / sound dropdown / Test columns start at the
+    -- same x on every row — and, because the measurement spans the whole list rather than one group, the
+    -- columns stay aligned ACROSS the expansion/season groups too. Every other cell is already fixed-width
+    -- (swatch 20, dropdown 150, Test 46), so this one basis lines the whole table up.
+    local _zw = parent:CreateFontString(nil, "ARTWORK", "GameFontHighlight"); _zw:Hide()
+    local widest = 0
+    for _, r in ipairs(list) do
+      _zw:SetText(r.label or "?")
+      widest = math.max(widest, _zw:GetStringWidth() or 0)
+    end
+    local ZONE_CHECK_W = math.ceil(26 + widest + 10)   -- CB_HIT(24)+gap(2) + widest label + pad
+    local function makeSwatch(row)
+      local b = CreateFrame("Button", nil, parent)
+      b:SetSize(20, 20)
+      local edge = b:CreateTexture(nil, "BACKGROUND"); edge:SetAllPoints(); edge:SetColorTexture(0, 0, 0, 0.9)
+      b.tex = b:CreateTexture(nil, "ARTWORK")
+      b.tex:SetPoint("TOPLEFT", 1, -1); b.tex:SetPoint("BOTTOMRIGHT", -1, 1)
+      local function paintSwatch()
+        local col = row.color or { 1, 1, 1 }
+        b.tex:SetColorTexture(col[1] or 1, col[2] or 1, col[3] or 1, 1)
+      end
+      paintSwatch()
+      b:SetScript("OnClick", function()
+        local col = row.color or { 1, 1, 1 }
+        local function apply()
+          local r, g, bl = ColorPickerFrame:GetColorRGB()
+          row.color = { r, g, bl }
+          paintSwatch(); refreshInd()
+        end
+        ColorPickerFrame:SetupColorPickerAndShow({
+          r = col[1] or 1, g = col[2] or 1, b = col[3] or 1,
+          swatchFunc = apply, okayFunc = apply,
+          cancelFunc = function(prev)
+            if prev then row.color = { prev.r, prev.g, prev.b }; paintSwatch(); refreshInd() end
+          end,
+        })
+      end)
+      b:SetScript("OnEnter", function(self) showTip(self, "Glow color", "The screen-edge color this watch glows. Click to pick.") end)
+      b:SetScript("OnLeave", GameTooltip_Hide)
+      return b
+    end
+    local function makeSoundDD(row)
+      local dd = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
+      dd:SetSize(150, 22); Theme.SkinDropdown(dd)
+      dd:SetupMenu(function(_dd, rootMenu)
+        rootMenu:CreateRadio("No sound",
+          function() return row.soundOn == false end,
+          function() row.soundOn = false end)
+        for _, o in ipairs(SOUND_CHOICES) do
+          if not o.file then   -- the flat-key "custom file" entry doesn't apply to per-row storage
+            rootMenu:CreateRadio(o.label,
+              function()
+                if row.soundOn == false then return false end
+                if o.filePath then return row.soundMode == "file" and row.soundFile == o.filePath end
+                return row.soundMode ~= "file" and row.soundId == o.id
+              end,
+              function()
+                row.soundOn = true
+                if o.filePath then row.soundMode, row.soundFile = "file", o.filePath
+                else row.soundMode, row.soundId = "kit", o.id end
+                if SBF.PlayZoneWatchSound then SBF.PlayZoneWatchSound(row, true) end   -- preview on pick
+              end)
+          end
+        end
+      end)
+      return dd
+    end
+    local groups, byKey = {}, {}
+    for _, row in ipairs(list) do
+      local sw, dd = makeSwatch(row), makeSoundDD(row)
+      local t = Theme.MakeButton(parent, 46, "Test", function()
+        -- the full package: the glow in this row's color for a few seconds AND its sound (not sound alone)
+        if SBF.PreviewZoneWatch then SBF.PreviewZoneWatch(row)
+        elseif SBF.PlayZoneWatchSound then SBF.PlayZoneWatchSound(row, true) end
+      end)
+      t:SetHeight(20)
+      local spec = { dir = "row", align = "center", pad = { l = 26 },
+        -- basis = the shared check-column width, so every following cell starts at the same x (see above)
+        { check = { label = row.label or "?",
+            get = function() return row.enabled ~= false end,
+            set = function(v) row.enabled = v and true or false; refreshInd() end,
+            help = row.note }, basis = ZONE_CHECK_W },
+        { frame = sw }, { frame = dd }, { frame = t },
+      }
+      local ct = row.content or {}
+      local key = (ct.expansion or "General") .. "|" .. tostring(ct.season or "")
+      local g = byKey[key]
+      if not g then
+        g = { key = key, specs = {},
+              header = (ct.expansion or "General") .. (ct.season and ("  -  Season " .. ct.season) or "") }
+        byKey[key] = g; groups[#groups + 1] = g
+      end
+      g.specs[#g.specs + 1] = spec
+    end
+    return groups
+  end
   local zgLabel = "Zone buff glow  (screen edges glow while a special fishing buff is on you)"
-  -- Patiently Rewarded's Audio-feedback sound row.
-  local prSoundRowSpec = soundRowSpec("Patiently Rewarded", { enable = "prSound", mode = "prSoundMode", id = "prSoundId" }, SBF.PlayPRSound, "set.prSound")
+  -- Patiently Rewarded's alert (glow + announce + sound) lives on the World tab now; this row points there.
+  local prSoundRowSpec = { pad = { l = 26 },
+    { note = { text = "Patiently Rewarded: its alert (glow, announcement and sound) is on the World tab.", color = "textMuted" } } }
 
   -- ---- the declarative tree (visual order top -> bottom) ----
   local tree = {
@@ -1617,6 +1765,23 @@ local function Build()
 
   root, refs = Theme.Layout(pBe, tree, { setParentHeight = true, settle = pBe })
 
+  -- The World tab: expansion/season-grouped content watches. Grouping comes from each row's content tag, so a
+  -- new season's seed row lands in the right group with no UI work.
+  if pages.world then
+    local pWo = attachPageScroll(pages.world, 490, 1)
+    local intro = { section = "Watches",
+      { note = { text = "Expansion, season and zone watches. Each row can glow the screen edges in its own "
+          .. "color, announce on screen, and play a sound. Rows are grouped by the content they belong to.",
+          color = "textMuted" } },
+    }
+    local wtree = { gap = "section", pad = { t = 8, r = 10, b = 12, l = 4 }, intro }
+    for _, g in ipairs(buildZoneRows(pWo)) do
+      local sec = { section = g.header }
+      for _, s in ipairs(g.specs) do sec[#sec + 1] = s end
+      wtree[#wtree + 1] = sec
+    end
+    Theme.Layout(pWo, wtree, { setParentHeight = true, settle = pWo })
+  end
   oVal = refs.oval
   oshow(SBFDB.bgAlpha or 0.94)
   SBF._sitCheck = refs.sit
@@ -1660,7 +1825,7 @@ local function Build()
     if SBFDB and SBFDB.collapsed then return end   -- no-op while collapsed (see the Buttons-page note)
     local bm = panel._buttonsMin or { w = 0, h = 0 }
     local sm = panel._settingsMin or { w = 560, h = 300 }
-    local wMin = math.max(sm.w or 560, bm.w or 0)
+    local wMin = math.max(sm.w or 560, bm.w or 0, panel._tabsMinW or 0)
     local hMin = math.max(sm.h or 300, bm.h or 0)
     if panel.SetResizeBounds then panel:SetResizeBounds(wMin, hMin)
     elseif panel.SetMinResize then panel:SetMinResize(wMin, hMin) end
@@ -1777,7 +1942,7 @@ local function Build()
     return s
   end
   -- per-kind tally line (Haul-style summary). The richer per-fish catch breakdown is a future tab.
-  local SBF_SUMMARY_ORDER = { "caught", "chest", "expired", "nothing", "missed", "interrupt", "castfail", "action", "buff", "skill" }
+  local SBF_SUMMARY_ORDER = { "caught", "chest", "expired", "nothing", "missed", "interrupt", "castfail", "unreachable", "action", "buff", "skill" }
   local function sbfSummary()
     local log, n = SBF.FishLog(), {}
     for i = 1, #log do local k = log[i].k; n[k] = (n[k] or 0) + 1 end
@@ -2171,7 +2336,7 @@ local function Build()
   local HEADLINE_TIP = {
     ["fish"]        = { "Fish caught", "Total items caught - a single cast can land several, and every item counts (gray junk included)." },
     ["casts"]       = { "Casts", "Fishing attempts that hit the water: caught + expired + nothing + missed + interrupted. Cast-fails (never started) aren't counted." },
-    ["avg cast"]    = { "Average cast time", "Average line-in-water time per cast (time fished ÷ casts) - how long a cast runs before it resolves, on average." },
+    ["avg cast"]    = { "Average cast time", "Average line-in-water time per cast - how long a cast runs before it resolves, on average. Casts only: out-of-reach recasts are left out of both the time and the count." },
     ["catch rate"]  = { "Catch rate", "Casts that landed a catch ÷ total casts. Always 100% or less." },
     ["time fished"] = { "Time fished", "Actual line-in-water time: the sum of every cast's channel length (cast to catch or expire). This is NOT how long you've been logged in - looting, travel, and the gaps between casts are not counted." },
     ["fish / hr"]   = { "Fish per hour", "Total fish ÷ time fished (line-in-water hours), so it reflects your fishing rate, not wall-clock time." },
@@ -2287,7 +2452,9 @@ local function Build()
     for _, it in pairs(roll.items or {}) do totalFish = totalFish + (it.n or 0) end   -- ITEM total (a cast can land several)
     local rate = casts > 0 and string.format("%d%%", math.floor(successCasts / casts * 100 + 0.5)) or "-"   -- cast-based, stays <=100%
     local secs = roll.totalDur or 0
-    local avgCast = casts > 0 and string.format("%.1fs", secs / casts) or "-"   -- average line-in-water time per cast
+    -- average line-in-water time per cast: out-of-reach recasts are left out of the time as well as the count
+    local castSecs = math.max(0, secs - (roll.unreachDur or 0))
+    local avgCast = casts > 0 and string.format("%.1fs", castSecs / casts) or "-"
     local fph = secs > 0 and string.format("%.1f", totalFish / (secs / 3600)) or "-"
     local blocks = {
       { tostring(totalFish), "fish" }, { tostring(casts), "casts" }, { avgCast, "avg cast" },
@@ -2310,7 +2477,7 @@ local function Build()
       local oorN = roll.oor or 0
       local pct = lineOuts > 0 and string.format("%d%%", math.floor(oorN / lineOuts * 100 + 0.5)) or "-"
       local ol = fsAcquire("GameFontHighlightSmall"); ol:SetPoint("TOPLEFT", PAD, y)
-      ol:SetText(("Out of reach: |cffe0b050%d|r of %d line-outs (%s)   recast: %d   |cff808080not counted in the numbers above|r")
+      ol:SetText(("Out of reach: |cffe0b050%d|r of %d line-outs (%s)   recast: %d   |cff808080left out of casts, avg cast and catch rate|r")
         :format(oorN, lineOuts, pct, kc.unreachable or 0))
       Theme.Font(ol, "textDim")
       tipAcquire(W - PAD * 2, 16, "Out of reach", "Casts whose bobber landed beyond the interact key's reach. Recast ones are logged as 'out of reach' and left out of casts and catch rate. Ones you still reeled in by pointing at them count as their real outcome. Settings, Bobber reach."):SetPoint("TOPLEFT", PAD, y)
@@ -2335,7 +2502,8 @@ local function Build()
       for _, r in ipairs(trows) do
         local kk, n = r[1], r[2]
         local col = KIND_COLOR[kk] or "ffffff"
-        local lbl = fsAcquire(); lbl:SetPoint("TOPLEFT", PAD, y); lbl:SetWidth(LBLW); lbl:SetText("|cff" .. col .. kk .. "|r")
+        local lbl = fsAcquire(); lbl:SetPoint("TOPLEFT", PAD, y); lbl:SetWidth(LBLW)
+        lbl:SetText("|cff" .. col .. ((KIND_LABEL[kk] and KIND_LABEL[kk] ~= "") and KIND_LABEL[kk]:lower() or kk) .. "|r")
         local bg = texAcquire(); bg:SetPoint("TOPLEFT", barX, y - 1); bg:SetSize(barMax, 12); bg:SetColorTexture(1, 1, 1, 0.06)
         local fill = texAcquire(); fill:SetPoint("TOPLEFT", barX, y - 1); fill:SetSize(math.max(2, barMax * (n / maxN)), 12)
         fill:SetColorTexture(Theme.HexToRGB(col)); fill:SetAlpha(0.85)

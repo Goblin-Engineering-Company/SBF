@@ -23,6 +23,9 @@ local feed = Data.Provide("SBF", {
     ["skill.level"] = "number",
     ["skill.max"]   = "number",
     ["skill.bonus"] = "raw",       -- pre-colored "+N" green, or ""
+    venom = "number",              -- the worn pole's counter (The Coiled Huntress: Venom); nil without one
+    ["venom.session"] = "number",  -- gained since login / reload (a turn-in never subtracts)
+    filament = "number",           -- Coiled Filament on hand (what the venom is turned into)
   },
   -- dynamic tokens: recomputed every render (the consumer pulls these on its refresh tick).
   GetToken = function(name)
@@ -31,6 +34,9 @@ local feed = Data.Provide("SBF", {
     if name == "next"       then return SBF.GetNext and SBF.GetNext() end
     if name == "perception" then return SBF.GetPerception and SBF.GetPerception() end
     if name == "skill"      then return SBF.GetFishing and SBF.GetFishing() end
+    if name == "venom"         then return SBF.PoleCounter and (SBF.PoleCounter()) end
+    if name == "venom.session" then return SBF.PoleCounterSession and SBF.PoleCounterSession() end
+    if name == "filament"      then return SBF.CoiledFilament and SBF.CoiledFilament() end
     if name:match("^skill%.") and SBF.FishingSkill then
       local lvl, mx, mod = SBF.FishingSkill()
       if name == "skill.level" then return lvl end
@@ -49,6 +55,8 @@ local feed = Data.Provide("SBF", {
     tt:AddLine("Skill: " .. (SBF.GetFishing and SBF.GetFishing() or "?"))
     tt:AddLine("Perception: " .. tostring(SBF.GetPerception and SBF.GetPerception() or 0))
     tt:AddLine("Next: " .. (SBF.GetNext and SBF.GetNext() or "?"))
+    local n, word; if SBF.PoleCounter then n, word = SBF.PoleCounter() end
+    if n then tt:AddLine(("%s: %d  (+%d this session)"):format(word or "Venom", n, SBF.PoleCounterSession() or 0)) end
   end,
 })
 

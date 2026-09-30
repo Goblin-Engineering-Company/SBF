@@ -72,8 +72,12 @@ end
 --
 -- There is NO exception and no clearing of any kind: see the fill-only note at the `if current then return`
 -- below. Setting `autoAddPole = false` turns the fill off entirely.
+-- RETAIL ONLY (2026-09-30). The retail pole lives in its own tool slot and rarely changes, so an empty box adopting
+-- it is exactly what a new player wants. WoW: Forever's pole is a main-hand weapon you may carry several of, so there
+-- the box is only ever what the player put in it (or the pole saved in the gear set, AdoptSetPole). And once the
+-- player CLEARS the box themselves (poleCleared, set by the right-click clear), it stays empty. Returns the pole.
 function SBF.AutoPopulatePole()
-  if SBFDB.autoAddPole == false then return end
+  if CLASSIC_GEAR or SBFDB.autoAddPole == false then return nil end
   local id = SBF.Store().activeProfile
   if not id then return end
   local pg = SBF.ProfileGear(id)
@@ -96,12 +100,54 @@ function SBF.AutoPopulatePole()
   -- WARBAND bank, so a pole parked there reads as "gone" and the profile's pick gets destroyed. A pole you
   -- cannot currently reach is still your choice; the cost of keeping it is a pinned slot you can right-click
   -- to clear, which is strictly better than silently losing it. Fill-only, per "the profile always wins".
-  if current then return end                    -- THE PROFILE WINS: a real pole is set, leave it alone
-  if not equipped then return end               -- slot empty but nothing worn to adopt: nothing to do
+  if current then return nil end                -- THE PROFILE WINS: a real pole is set, leave it alone
+  if (live and live.poleCleared) or (not live and pg.poleCleared) then return nil end   -- the player emptied it
+  if not equipped then return nil end           -- slot empty but nothing worn to adopt: nothing to do
 
   pg.pole = equipped
   if live then live.pole = equipped end         -- keep the live working copy (and the box) in sync
   if SBF.RefreshOptions then SBF.RefreshOptions() end
+  return equipped
+end
+
+-- The profile's pole box is empty but its GEAR SET holds a fishing pole: that pole is the player's choice, so adopt it
+-- into the box (2026-09-30). Forever/Classic: a Fishing Pole in the set's main hand; retail: whatever the set saved in
+-- the fishing tool slot. Only a pole the character owns, and only when the box is EMPTY (the box always wins).
+-- Written like the old auto-fill: straight to the saved profile + the working copy, so it doesn't mark the profile
+-- dirty. Returns the adopted pole id, or nil. Called on the action press, just before the gear gate.
+function SBF.AdoptSetPole()
+  local w = SBF.working
+  if not (w and w.equipSet and not w.pole and not w.poleCleared and C_EquipmentSet) then return nil end   -- cleared on purpose
+  local id = C_EquipmentSet.GetEquipmentSetID(w.equipSet)
+  local ids = id and C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(id)
+  if not ids then return nil end
+  local pole = ids[SBF.PoleSlot()]
+  if type(pole) ~= "number" or pole <= 1 then return nil end
+  if CLASSIC_GEAR and select(7, GetItemInfoInstant(pole)) ~= 20 then return nil end   -- a sword in the set: not a pole
+  local have = (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(pole)) or (GetItemCount and GetItemCount(pole)) or 0
+  if have == 0 then return nil end
+  local pid = SBF.Store and SBF.Store().activeProfile
+  -- the saved profile too, but never under unsaved edits (Save / Revert then decide, as for any other change)
+  if pid and pid == w.id and not w.dirty and SBF.ProfileGear then SBF.ProfileGear(pid).pole = pole end
+  w.pole = pole
+  print(("|cff45c4a0SBF|r Using the fishing pole from gear set |cffffd100%s|r for profile |cffffd100%s|r."):format(
+    w.equipSet, w.name or "?"))
+  if SBF.RefreshOptions then SBF.RefreshOptions() end
+  return pole
+end
+
+-- The profile has no pole set: say so ONCE per session per profile (chat), so the player knows to drag the pole
+-- they want into the Profile page's pole box. SBF then equips no pole at all (whatever is worn stays on).
+local poleNoted = {}
+function SBF.NoteMissingPole()
+  if not CLASSIC_GEAR then return end            -- retail: the tool slot's pole stays on, nothing to warn about
+  local w = SBF.working
+  if not w or w.pole then return end
+  local key = w.id or "?"
+  if poleNoted[key] then return end
+  poleNoted[key] = true
+  print(("|cff45c4a0SBF|r Profile |cffffd100%s|r has no fishing pole set, so SBF won't equip one. Open |cffffd100/sbf|r, "
+    .. "Profile page, and drag the pole you want to fish with into the Fishing pole box."):format(w.name or "?"))
 end
 
 -- ---- focus fishing audio (reconfigure WoW's sound while fishing) ----
@@ -335,27 +381,47 @@ local function setInfo(name)
   return id, isEquipped, numInBags or 0, numLost or 0
 end
 
--- On Forever/Classic the pole IS the main hand, so when the profile names a pole the character owns, the weapon
--- slots belong to the POLE, not the equipment set. Otherwise a set saved with a sword (or an older pole) in the main
--- hand and the profile pole take turns: pole on, set puts the sword back, pole on... and the press never fishes
--- (QC 2026-09-29). Retail keeps the pole in its own slot, so there the set owns every slot as before.
+-- The profile POLE owns its slot(s), never the equipment set. Otherwise a set saved with a different item there and
+-- the profile pole take turns: pole on, set puts its item back, pole on... every press is a gear press (the profile
+-- flash pops each time) and the loop never fishes (QC 2026-09-29, and the retail report of the same day with a newly
+-- awarded pole). Forever/Classic: the pole IS the main hand, so the weapon slots (16, 17) are the pole's whenever the
+-- profile names a pole this character owns. Retail: the tool slot (28) is the pole's, but only when the set actually
+-- holds a DIFFERENT item there; otherwise retail keeps Blizzard's own whole-set swap, exactly as before.
 local WEAPON_SLOTS = { [16] = true, [17] = true }
-local function poleOwnsWeapons()
+local function ownsPole()
   local w = SBF.working
-  if not (CLASSIC_GEAR and w and w.pole) then return false end
+  if not (w and w.pole) then return false end
   local have = (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(w.pole))
             or (GetItemCount and GetItemCount(w.pole)) or 0
   return have > 0
 end
+-- The only pole SBF equips is the profile's own (2026-09-30), so a gear set never puts a pole on: with no profile
+-- pole the set's pole slot is skipped too, and whatever pole is worn stays where it is.
+local function poleSkipSlots(id)
+  local w = SBF.working
+  if CLASSIC_GEAR then
+    if ownsPole() then return WEAPON_SLOTS end
+    -- no profile pole: skip only a POLE the set holds in the main hand (a set's real weapon still equips)
+    local ids = (C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(id)) or {}
+    local mh = ids[INVSLOT_MH]
+    if type(mh) == "number" and mh > 1 and select(7, GetItemInfoInstant(mh)) == 20 then return WEAPON_SLOTS end
+    return nil
+  end
+  local ids = (C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(id)) or {}
+  local slot = SBF.PoleSlot()
+  local inSet = ids[slot]
+  if type(inSet) == "number" and inSet > 1 and not (w and inSet == w.pole) then return { [slot] = true } end
+  return nil
+end
 
--- The set's pieces this character should be wearing: slot -> itemID, skipping ignored slots (and the weapon slots
--- when the pole owns them).
-local function setPieces(id, skipWeapons)
+-- The set's pieces this character should be wearing: slot -> itemID, skipping ignored slots (and the slots the
+-- profile pole owns).
+local function setPieces(id, skip)
   local out = {}
   local ids = (C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(id)) or {}
   local ignored = (C_EquipmentSet.GetIgnoredSlots and C_EquipmentSet.GetIgnoredSlots(id)) or {}
   for slot, itemID in pairs(ids) do
-    if not ignored[slot] and not (skipWeapons and WEAPON_SLOTS[slot]) and type(itemID) == "number" and itemID > 1 then
+    if not ignored[slot] and not (skip and skip[slot]) and type(itemID) == "number" and itemID > 1 then
       out[slot] = itemID
     end
   end
@@ -365,10 +431,10 @@ end
 local function useEquipmentSet(name)
   local id, _, _, numLost = setInfo(name)
   if not id then return end
-  local skipWeapons = poleOwnsWeapons()
-  if numLost == 0 and not skipWeapons then C_EquipmentSet.UseEquipmentSet(id) return end
+  local skip = poleSkipSlots(id)
+  if numLost == 0 and not skip then C_EquipmentSet.UseEquipmentSet(id) return end
   if numLost > 0 then warnMissing(name, numLost) end           -- some pieces are gone: equip the rest one by one
-  for slot, itemID in pairs(setPieces(id, skipWeapons)) do
+  for slot, itemID in pairs(setPieces(id, skip)) do
     if GetInventoryItemID("player", slot) ~= itemID then
       local link = SBF.BagItemLink(itemID)
       if link then EquipItemByName(link, slot) end
@@ -413,9 +479,10 @@ end
 local function setEquipped(name)
   local id, isEquipped, numInBags, numLost = setInfo(name)
   if not id then return true end                               -- no set / set deleted: nothing to enforce
-  if poleOwnsWeapons() then                                    -- Forever/Classic: judge the set without its weapons
+  local skip = poleSkipSlots(id)
+  if skip then                                                 -- judge the set without the pole's slot(s)
     local short = 0
-    for slot, itemID in pairs(setPieces(id, true)) do
+    for slot, itemID in pairs(setPieces(id, skip)) do
       if GetInventoryItemID("player", slot) ~= itemID then
         if SBF.BagItemLink(itemID) then return false end       -- a piece is in the bags: still to equip
         short = short + 1                                      -- not worn, not in the bags: missing
@@ -497,7 +564,8 @@ local function applyProfileGear()
     EquipItemByName(SBF.PoleEquipArg(w.pole))
   else
     if not setOK and w.equipSet then useEquipmentSet(w.equipSet) end
-    if not poleOK and w.pole then EquipItemByName(SBF.PoleEquipArg(w.pole)) end
+    -- Retail equips the pole by its item id, as it always has; the bag-link form is a Forever workaround only.
+    if not poleOK and w.pole then EquipItemByName(CLASSIC_GEAR and SBF.PoleEquipArg(w.pole) or w.pole) end
   end
   SBF.CharGear().on = true
   -- Announce the active PROFILE (gold raid-warning flash), gated on the same toggle as the profile-swap
@@ -511,14 +579,33 @@ end
 -- Does the active profile manage gear that ISN'T currently worn? The PreClick uses this to decide whether
 -- a press is a "change gear" press (equip, don't fish) vs a normal fishing press. Cheap (a couple of API
 -- reads); false when the profile manages no gear (e.g. Default) or everything's already on.
-function SBF.GearNeedsEquip()
-  if SBF._emEditing then return false end   -- suspended while editing the set in the Equipment Manager
+function SBF.GearNeedsEquipIgnoringEdit()
   local w = SBF.working; if not w then return false end
   if not (w.equipSet or w.pole) then return false end
   return not (setEquipped(w.equipSet) and poleEquipped(w.pole))
 end
+function SBF.GearNeedsEquip()
+  if SBF._emEditing then return false end   -- suspended while editing the set in the Equipment Manager
+  return SBF.GearNeedsEquipIgnoringEdit()
+end
 
 function SBF.EquipProfileGear() applyProfileGear() end       -- "Equip current profile gear"
+
+-- The Equipment Manager button's edit session: put the whole fishing set on, then suspend auto-equip so SBF doesn't
+-- fight the player's edits. On Forever/Classic one gear press equips only the POLE (the set follows on the next),
+-- so a single call opened the editor in normal armor plus the pole, one Save away from overwriting the fishing set
+-- (QC 2026-09-30). There the rest of the set goes on a moment later, still out of combat, before editing starts.
+function SBF.EquipForEdit()
+  applyProfileGear()
+  SBF._emEditing = true
+  if not (CLASSIC_GEAR and C_Timer) then return end
+  C_Timer.After(0.6, function()
+    if not SBF._emEditing or InCombatLockdown() or not SBF.GearNeedsEquipIgnoringEdit() then return end
+    SBF._emEditing = false
+    applyProfileGear()
+    SBF._emEditing = true
+  end)
+end
 function SBF.RestoreNormalGear() restoreGear() end           -- "Restore normal gear"
 
 -- The SINGLE "return to normal" entry point: packages every "back to normal" side-effect (gear + audio) in
