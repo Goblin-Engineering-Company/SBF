@@ -135,11 +135,14 @@ local BEHAVIOUR_KEYS = {
   -- changed one has no memory of doing it — so the report has to state them.
   "jumpKeyState", "jumpKeyupHold", "jumpHeldMaxDefer", "pollInterval", "ascentBreaker", "bounceJump",
   "bounceBreakWithBuff", "surfaceClimbJump",
+  -- Forever: the no-pole stop, the unsaved-changes prompt, the Cast Fishing guard, the gear restore tunables
+  "warnNoPole", "warnUnsavedOnClose", "guardFishingOff", "restoreMaxTries", "restoreRetryDelay",
 }
 -- Settings whose DEFAULT is on (stored as nil until explicitly turned off, read with `~= false`). A nil
 -- here means "on", so silently omitting them would misreport the config — the reader can't tell an absent
 -- key from an off one.
-local DEFAULT_ON = { showUnownedItems = true, showUnownedToys = true, showWarbandItems = true }
+local DEFAULT_ON = { showUnownedItems = true, showUnownedToys = true, showWarbandItems = true,
+  warnNoPole = true, warnUnsavedOnClose = true, guardFishingOff = true }
 
 -- tostring() on a table prints an ADDRESS, which is noise in a report and differs every session
 -- (`fallingBoats=table: 0x9db116570` in the first real report). Render something a human can read.
@@ -349,10 +352,11 @@ function SBF.BugReport(note)
     tostring(GetLocale and GetLocale() or "?"))
   if SBF.CLASSIC_GEAR then   -- bobber reach state (Forever / Classic): the setting SBF raises + the mode
     local r = SBF.ReachState and SBF.ReachState() or {}
-    out[#out + 1] = ("reach  : mode=%s yards=%s applied=%s live range=%s  zoom=%s"):format(
+    out[#out + 1] = ("reach  : mode=%s yards=%s applied=%s live range=%s  camera=%s view=%s saved=%s"):format(
       tostring(SBF.ReachMode and SBF.ReachMode()), tostring(SBF.ReachYards and SBF.ReachYards()),
       tostring(r.on and true or false), tostring(GetCVar and GetCVar("SoftTargetInteractRange")),
-      tostring(SBF.ReachZoom and SBF.ReachZoom()))
+      (SBF.UseSavedCamera and SBF.UseSavedCamera()) and "saved" or "off",
+      tostring(SBF.CameraViewSlot and SBF.CameraViewSlot()), tostring(SBFDB.reachViewSaved))
   end
   -- class + level only: they gate spells (boat spells, heals) and are not identifying. NO name/realm/guild.
   localeLines(out)

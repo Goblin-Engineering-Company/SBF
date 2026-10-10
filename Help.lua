@@ -10,6 +10,14 @@ SBF = SBF or {}
 
 SBF.Help = {
   -- ===== Settings: Fishing behavior =====
+  ["set.warnNoPole"] = { title = "Warn when there's no fishing pole",
+    body = "If you press your fishing key with no pole in your hands and nothing set up to put one on, SBF "
+      .. "doesn't cast. It tells you to drag your pole into the Fishing pole box on the Profile page, or to give "
+      .. "the profile a gear set with a pole in it. Uncheck to let the cast go through anyway." },
+  ["set.guardFishingOff"] = { title = "Shift+click to turn off Cast Fishing",
+    body = "Turning off the Cast Fishing button takes a Shift+click on its name, so a stray click can't stop "
+      .. "your action key from fishing. With Cast Fishing off, the key only does your combat action. "
+      .. "Turning it back on is always a plain click. Uncheck this to make it a plain click both ways." },
   ["set.sitBeforeCast"] = { title = "Sit before each cast",
     body = "Sits your character before every cast. A few fishing setups want this; most don't need it." },
   ["set.autoDismount"] = { title = "Auto-dismount to fish",
@@ -70,6 +78,10 @@ SBF.Help = {
     body = "When you change zones, SBF automatically activates the profile bound to where you are "
       .. "(most specific match wins: sub-zone, then zone, then region; otherwise the default profile). "
       .. "Turn off to only ever switch profiles by hand." },
+  ["set.warnUnsavedOnClose"] = { title = "Ask to save when closing SBF",
+    body = "If you close the SBF window with profile changes you haven't saved, SBF lists them and asks: "
+      .. "Save, Discard, or Keep editing. Unsaved changes can be lost later on a Revert, a profile swap, "
+      .. "or when another character logs in, so this catches them while you remember making them." },
   ["set.swapFlash"] = { title = "Flash on profile swap",
     body = "When a location auto-swap activates a different profile, briefly flash its name on screen "
       .. "(as a raid-warning) so you know which setup is now active. Has no effect on manual switches." },
@@ -110,22 +122,25 @@ SBF.Help = {
       .. "setting comes back when you stop. The very farthest casts can still land beyond it, and the options below "
       .. "decide what happens then. Fine-tune with /sbf reach <yards>. The bobber also has to land where your camera "
       .. "can see it: zoomed all the way in, or looking down at your feet, far casts always read as out of reach." },
-  ["set.reachZoom"] = { title = "Zoom out while fishing",
-    body = "The interact key can only grab a bobber your camera can see. While you fish, SBF zooms the camera out "
-      .. "to a comfortable distance if you're closer (first person, for example), and puts your zoom back when you "
-      .. "stop. It never pulls a camera that's already farther out back in. Fine-tune with /sbf reachzoom <distance>." },
-  ["set.reachFaceView"] = { title = "Point the camera straight ahead",
-    body = "Each time you cast, SBF swings the camera behind your character looking straight ahead at a normal "
-      .. "distance, so the bobber lands on screen. It does this with WoW's saved camera view 5, which it resets to "
-      .. "the game default, so leave this off if you use view 5 for something else (or pick another slot with "
-      .. "/sbf reachview <2-5>). Your zoom goes back when you stop." },
+  ["set.reachCamera"] = { title = "Use my saved camera",
+    body = "The interact key can only grab a bobber your camera can see. Set your camera up the way you like to "
+      .. "fish and click Save current camera; with this on, SBF switches to that camera once when you start "
+      .. "fishing. It doesn't touch the camera again while you fish, and leaves it where it is when you stop." },
+  ["set.reachViewSlot"] = { title = "Camera view slot",
+    body = "Your saved camera lives in one of WoW's saved camera views (2 to 5). Save current camera overwrites the "
+      .. "one picked here, so choose a slot nothing else uses: another addon, or a keybind of your own." },
+  ["set.reachSaveCamera"] = { title = "Save current camera",
+    body = "Set your camera up the way you like to fish, then click this. SBF saves it into the view slot picked "
+      .. "here and switches to it when you start fishing. The angle is kept relative to your character, so it follows "
+      .. "you whichever way you face." },
   ["set.reachRecast"] = { title = "Recast when out of reach",
     body = "When the bobber lands beyond the interact key's reach, your next press recasts instead of doing "
       .. "nothing. Those casts are counted separately (Stats: Out of reach) and left out of your catch rate. "
       .. "Unticked: point the mouse at the bobber and press your interact key to reel it. On by default in WoW: Forever." },
-  ["set.reachSound"] = { title = "Out-of-reach sound",
-    body = "Play a sound once when the bobber lands beyond the interact key's reach, so you know to press again "
-      .. "(recast) or point at it." },
+  ["set.reachSound"] = { title = "Out-of-reach alert",
+    body = "When the bobber lands beyond the interact key's reach, show a message on screen and play a sound "
+      .. "once, so you know to press again (recast) or point at it. Pick \"No sound (message only)\" to keep "
+      .. "just the message. Uncheck to turn the whole alert off, message and sound." },
   ["set.noFishSound"] = { title = "No-fish-hooked sound",
     body = "Play a sound on \"No fish are hooked\" - you pulled the line too early or too late and got "
       .. "nothing (a MISSED bite). Different from cast-fail (can't cast there at all) and from a cast that "

@@ -817,9 +817,10 @@ local function WarnKeyConflict(combo)
 end
 
 -- Friendly label for a slot id (Pole Enchant, Chum, …); falls back to the raw id (gear pseudo-actions etc.).
+local GEAR_LABEL = { equipGear = "Equip profile gear", restoreGear = "Restore normal gear" }
 local function SlotLabel(id)
   local d = ns.SlotDef and ns.SlotDef(id)
-  return (d and d.label) or id
+  return (d and d.label) or GEAR_LABEL[id] or id
 end
 -- Every OTHER SBF-owned slot key as a { [combo] = label } map, for GECBind.Conflict. Spans all three internal
 -- stores (binds/binds2/bindsCtrl) and every slot, EXCLUDING the exact cell being edited, so re-capturing the
@@ -869,6 +870,12 @@ local function MakeKeybindButton(parent, x, y, slotId, w, after, mode, storeName
     local store = bindStore(storeName)
     if token == "ESCAPE" then store[slotId] = nil; teardown(s); return end
     local combo = isPad and token or SBF.ComboString(token)
+    -- the gear keys can't share the fishing / loot / Interact key (Apply would skip them): refuse it here, saying why
+    if (slotId == "equipGear" or slotId == "restoreGear") and SBF.IsMainKey and SBF.IsMainKey(combo) then
+      print(("|cff45c4a0SBF|r |cffffd100%s|r is your fishing or loot key. Pick a different key for %s."):format(
+        combo, slotId == "equipGear" and "Equip profile gear" or "Restore normal gear"))
+      teardown(s); return
+    end
     local extra = SlotConflictExtra(slotId, storeName)
     local label, rawAction = GECBind.Conflict(combo, slotId, extra)   -- extra=other SBF slots; native=game binds
     local sbfOwned = label and (rawAction == nil or rawAction:match("^CLICK SBF"))
@@ -1357,13 +1364,22 @@ local function MakeRow(parent, y, def, labelText, src, reflow)
       SBF.Anomaly("stale-slot-ref", "slot '%s': the Options row held a DETACHED slot table (working copy was "
         .. "rebuilt since this tab was drawn). Wrote through the live one instead.", tostring(src and src.id))
     end
+    -- Turning Cast Fishing OFF from the row takes a Shift+click (SBFDB.guardFishingOff). With it off the action
+    -- key stops fishing and only runs the combat block, and that's easy to do by accident on this row and hard
+    -- to spot afterwards. Turning it back ON stays a plain click.
+    if src and src.id == "fishing" and not d.skip and SBFDB.guardFishingOff ~= false and not IsShiftKeyDown() then
+      print("|cff45c4a0SBF|r Cast Fishing stays on. Shift+click its name to turn it off.")
+      return
+    end
     d.skip = (not d.skip) and true or nil; paint()
     markDirty(d)          -- active/inactive toggle -> unsaved edit (skipped for char-slots)
     if SBF.Apply then SBF.Apply() end
   end)
   lblBtn:SetScript("OnEnter", function(self)
     local d = D()
-    showTip(self, d.skip and "Inactive - left-click to activate" or "Active - left-click to deactivate",
+    local guarded = src and src.id == "fishing" and SBFDB.guardFishingOff ~= false
+    showTip(self, d.skip and "Inactive - left-click to activate"
+        or (guarded and "Active - Shift+click to deactivate" or "Active - left-click to deactivate"),
       "right-click: configure (active / key)")
   end)
   lblBtn:SetScript("OnLeave", GameTooltip_Hide)

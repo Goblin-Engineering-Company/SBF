@@ -117,7 +117,12 @@ end
 -- dirty. Returns the adopted pole id, or nil. Called on the action press, just before the gear gate.
 function SBF.AdoptSetPole()
   local w = SBF.working
-  if not (w and w.equipSet and not w.pole and not w.poleCleared and C_EquipmentSet) then return nil end   -- cleared on purpose
+  -- Retail: a box you cleared stays clear (poleCleared). Forever/Classic: the gear set is the source of truth, so a
+  -- set with a pole in it always fills the empty box, cleared or not. The player configures the pole there, and the
+  -- Forever tooltip has always said so; honouring the flag left a cleared box with NO pole ever going on, set or not
+  -- (2026-10-07). Don't want a pole from the set? Take it out of the set, or set its main hand to ignored.
+  if not (w and w.equipSet and not w.pole and C_EquipmentSet) then return nil end
+  if w.poleCleared and not CLASSIC_GEAR then return nil end   -- retail: cleared on purpose
   local id = C_EquipmentSet.GetEquipmentSetID(w.equipSet)
   local ids = id and C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(id)
   if not ids then return nil end
@@ -125,11 +130,15 @@ function SBF.AdoptSetPole()
   if type(pole) ~= "number" or pole <= 1 then return nil end
   if CLASSIC_GEAR and select(7, GetItemInfoInstant(pole)) ~= 20 then return nil end   -- a sword in the set: not a pole
   local have = (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(pole)) or (GetItemCount and GetItemCount(pole)) or 0
-  if have == 0 then return nil end
+  -- worn counts as owned outright: wearing the set is the normal case, and the bag count alone isn't trusted for it
+  if have == 0 and GetInventoryItemID("player", SBF.PoleSlot()) ~= pole then return nil end
   local pid = SBF.Store and SBF.Store().activeProfile
   -- the saved profile too, but never under unsaved edits (Save / Revert then decide, as for any other change)
-  if pid and pid == w.id and not w.dirty and SBF.ProfileGear then SBF.ProfileGear(pid).pole = pole end
-  w.pole = pole
+  if pid and pid == w.id and not w.dirty and SBF.ProfileGear then
+    local pg = SBF.ProfileGear(pid)
+    pg.pole, pg.poleCleared = pole, nil         -- the saved copy too, or the login re-seed brings the flag back
+  end
+  w.pole, w.poleCleared = pole, nil
   print(("|cff45c4a0SBF|r Using the fishing pole from gear set |cffffd100%s|r for profile |cffffd100%s|r."):format(
     w.equipSet, w.name or "?"))
   if SBF.RefreshOptions then SBF.RefreshOptions() end
@@ -145,9 +154,59 @@ function SBF.NoteMissingPole()
   if not w or w.pole then return end
   local key = w.id or "?"
   if poleNoted[key] then return end
+  -- nothing in hand and no set: the no-pole popup (WarnNoPole) says it, on the cast press and the Equip key. Checked
+  -- BEFORE marking the note as shown, so it isn't used up without anyone seeing it (QC 9 re-verify defect 3).
+  if SBFDB.warnNoPole ~= false and SBF.EquippedPole() == nil and not w.equipSet then return end
   poleNoted[key] = true
+  -- the gear set holds a pole but AdoptSetPole couldn't use it (this character doesn't have it): name it, so the
+  -- player isn't left guessing why the set's pole never goes on
+  local setPole
+  local sid = w.equipSet and C_EquipmentSet and C_EquipmentSet.GetEquipmentSetID(w.equipSet)
+  local ids = sid and C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(sid)
+  local mh = ids and ids[SBF.PoleSlot()]
+  if type(mh) == "number" and mh > 1 and select(7, GetItemInfoInstant(mh)) == 20 then
+    setPole = (C_Item and C_Item.GetItemInfo and select(2, C_Item.GetItemInfo(mh))) or ("item " .. mh)
+  end
+  if setPole then
+    print(("|cff45c4a0SBF|r Gear set |cffffd100%s|r has %s as its pole, but it isn't in your bags or hands, so profile "
+      .. "|cffffd100%s|r has no pole to equip. Get the pole back, or drag the one you want into the Fishing pole box "
+      .. "(|cffffd100/sbf|r, Profile page)."):format(w.equipSet, setPole, w.name or "?"))
+    return
+  end
+  if SBFDB.warnNoPole ~= false and SBF.EquippedPole() == nil then return end   -- the popup covers it
   print(("|cff45c4a0SBF|r Profile |cffffd100%s|r has no fishing pole set, so SBF won't equip one. Open |cffffd100/sbf|r, "
     .. "Profile page, and drag the pole you want to fish with into the Fishing pole box."):format(w.name or "?"))
+end
+
+-- Forever/Classic: is there NO fishing pole in hand to fish with? Asked AFTER the gear gate, so a pole the profile
+-- can equip is already on by now; nil here means nothing will put one on (empty box, no pole in the gear set, or a
+-- pole this character doesn't have). Casting anyway only gets the game's "requires a fishing pole" error, so the
+-- press stops and says why instead. Retail never blocks (the pole lives in the tool slot and is the player's own).
+function SBF.NoPoleToFish()
+  if not CLASSIC_GEAR then return false end
+  return SBF.EquippedPole() == nil
+end
+
+-- Say it before the game does. A popup once per profile per session (with a way to the pole box), then a short
+-- on-screen line on every press after that, so the key never just silently does nothing.
+if StaticPopupDialogs then StaticPopupDialogs["SBF_NO_POLE"] = {
+  text = "SBF - no fishing pole\n\nProfile \"%s\" has no fishing pole to put on, so SBF can't fish yet.\n\n"
+    .. "Drag your pole into the Fishing pole box on SBF's Profile page, or give this profile a gear set "
+    .. "with a pole in its main hand.",
+  button1 = "Open SBF", button2 = OKAY,
+  OnAccept = function() if SBF.OpenToTab then SBF.OpenToTab("buttons") end end,
+  timeout = 0, whileDead = true, hideOnEscape = true, noCancelOnReuse = true, preferredIndex = 3,
+} end   -- (guarded: the offline tests load this file with no UI)
+local noPoleShown = {}
+function SBF.WarnNoPole()
+  local w = SBF.working
+  local key = (w and w.id) or "?"
+  if not noPoleShown[key] then
+    noPoleShown[key] = true
+    StaticPopup_Show("SBF_NO_POLE", (w and w.name) or "?")
+  elseif UIErrorsFrame then
+    UIErrorsFrame:AddMessage("SBF: no fishing pole - drop one in the Profile page's pole box", 1, 0.82, 0)
+  end
 end
 
 -- ---- focus fishing audio (reconfigure WoW's sound while fishing) ----
@@ -282,51 +341,54 @@ function SBF.ApplyBobberReach()
   setCVarSafe("SoftTargetInteractRange", tostring(want))
   r.on = true
 end
--- ---- fishing camera zoom (Forever / Classic) ----
--- The interact key only targets what the CAMERA can see, so a player zoomed all the way in (first person) or
--- looking at their feet reads every far cast as out of reach. While fishing, SBF zooms the camera out to at least
--- SBFDB.reachZoom (camera distance; nil = REACH_ZOOM_DEFAULT on classic-layout clients, 0 = off, retail off), and
--- puts the zoom back when fishing stops. Only ever zooms OUT (never pulls a wider camera in). Zoom is reliable to
--- drive (GetCameraZoom + CameraZoomOut/In return to the exact distance). The snapshot is session-only on purpose:
--- zoom doesn't survive a relog, so a saved snapshot would "restore" a stale distance at the next login.
-local REACH_ZOOM_DEFAULT = 8
-local function zoomTarget()
-  local v = SBFDB.reachZoom
-  if v == nil then v = CLASSIC_GEAR and REACH_ZOOM_DEFAULT or 0 end
-  return tonumber(v) or 0
+-- ---- fishing camera (Forever / Classic) ----
+-- The interact key only grabs a bobber the camera can see. SBF used to move the camera for you (a zoom floor, then
+-- a "straight ahead" reset plus a timed tilt), on every cast. Players found it disruptive, and the timed tilt could
+-- not be made accurate (the game turns the camera in big frame-sized steps and can't report the angle back), so all
+-- of that is gone (2026-10-09). What's left is the player's own camera, and only if they ask for it:
+--   "Save current camera" stores the camera as it is right now into one of WoW's saved views (SBFDB.reachViewSlot,
+--   2-5, default 5; pick one nothing else uses), and "Use my saved camera" (SBFDB.reachCamera == "saved") switches
+--   to it ONCE when fishing starts (the first press of a fishing run), never again per cast. Saved views follow the
+--   character, so the angle holds whichever way you face. The camera is left where it is when fishing stops.
+-- The game can't hand an angle out as numbers, so each player saves their own.
+function SBF.CameraViewSlot()
+  local s = tonumber(SBFDB.reachViewSlot)
+  return (s and s >= 2 and s <= 5) and s or 5
 end
-function SBF.ReachZoom() return zoomTarget() end
--- OPTIONAL "face forward" (SBFDB.reachFaceView, off by default): on every cast press (the flag resets when a cast
--- ends, in Core's channel-stop handler, so moving the camera mid-cast is corrected on the next cast), reset one of WoW's saved
--- camera views (SBFDB.reachViewSlot, default 5) to the game default and switch to it. Saved views are relative to
--- the character, so the camera lands behind you looking straight ahead at a normal distance, whatever angle it had.
--- It overwrites that view slot, which is why it's opt-in. Stopping restores the zoom distance as usual; from first
--- person that returns you to first person facing forward, so the old angle doesn't matter.
+function SBF.UseSavedCamera() return SBFDB.reachCamera == "saved" end
+function SBF.SaveFishingCamera()
+  if not SaveView then return end
+  local slot = SBF.CameraViewSlot()
+  SaveView(slot)
+  SBFDB.reachCamera, SBFDB.reachViewSaved = "saved", slot
+  print(("|cff45c4a0SBF|r Saved this camera to view %d. SBF switches to it when you start fishing."):format(slot))
+end
+-- (kept under its old name: the press path, ActivateFishing and the idle revert all call these two)
 function SBF.ApplyFishingZoom()
-  if not (GetCameraZoom and CameraZoomOut) then return end
-  if SBFDB.reachFaceView and CLASSIC_GEAR and not SBF._faceViewDone and SetView and ResetView then
-    if SBF._zoomSnap == nil then SBF._zoomSnap = GetCameraZoom() or 0 end   -- before the view changes the distance
-    local slot = tonumber(SBFDB.reachViewSlot) or 5
-    ResetView(slot)
-    SetView(slot)
-    SBF._faceViewDone = true
-    return                                                  -- the view glides in; the zoom floor applies next press
+  if SBF._camApplied or not (CLASSIC_GEAR and SBF.UseSavedCamera() and SetView) then return end
+  local slot = SBF.CameraViewSlot()
+  if SBFDB.reachViewSaved ~= slot then             -- nothing saved in that slot: don't jump to its default view
+    if not SBF._camNoteShown then
+      SBF._camNoteShown = true
+      print(("|cff45c4a0SBF|r No camera saved in view %d yet. Set it up how you like, then Settings, Bobber reach, "
+        .. "Save current camera."):format(slot))
+    end
+    return
   end
-  local want = zoomTarget()
-  if want <= 0 then return end
-  local cur = GetCameraZoom() or 0
-  if cur >= want - 0.05 then return end
-  if SBF._zoomSnap == nil then SBF._zoomSnap = cur end      -- the player's own distance, taken once per fishing run
-  CameraZoomOut(want - cur)
+  SetView(slot)
+  SBF._camApplied = true                                    -- once per fishing run (cleared when fishing mode drops)
 end
 function SBF.RestoreFishingZoom()
-  SBF._faceViewDone = nil                                   -- next fishing run faces forward again
+  SBF._camApplied = nil                                     -- the next fishing run switches to the saved camera again
+  -- One-release upgrade path: a /reload straight from a build that still zoomed out carries its distance snapshot
+  -- (Core's login handler adopts SBFDB._zoomSnap). Put that zoom back once, so nobody is left zoomed out by the
+  -- removed feature. New builds never set it.
   local snap = SBF._zoomSnap
-  if snap == nil then return end
   SBF._zoomSnap = nil
-  if not (GetCameraZoom and CameraZoomIn) then return end
-  local d = (GetCameraZoom() or 0) - snap
-  if d > 0.05 then CameraZoomIn(d) end                      -- back to the exact distance they had
+  if snap and GetCameraZoom and CameraZoomIn then
+    local d = (GetCameraZoom() or 0) - snap
+    if d > 0.05 then CameraZoomIn(d) end
+  end
 end
 
 -- `keepFlag` = put the player's value back but remember that SBF applied it (logout: if the client dies before the
@@ -428,6 +490,52 @@ local function setPieces(id, skip)
   return out
 end
 
+-- The slots the set saved EMPTY ("take this off"), skipping ignored slots and the slots the profile pole owns.
+-- setPieces only lists real items, so before this a set whose difference was a removed piece (a hat off for
+-- fishing) read as already worn and never switched. Probed on WoW: Forever 2026-10-07: a slot saved empty comes
+-- back with NO item id and NO location at all (nil, nil), not EQUIPMENT_SET_EMPTY_SLOT (0); an ignored slot is in
+-- GetIgnoredSlots. So: not ignored + no item = keep it empty. An id of 0 stays accepted for other clients.
+-- NEVER call C_EquipmentSet.GetItemLocations here: since the Forever update of 2026-10-08 it crashes the client
+-- outright ("stack overwrite detected", three crash logs, every one inside this function on the action press).
+-- The item ids alone answer the question.
+local function setEmptySlots(id, skip)
+  local out = {}
+  local ids = (C_EquipmentSet.GetItemIDs and C_EquipmentSet.GetItemIDs(id)) or {}
+  local ignored = (C_EquipmentSet.GetIgnoredSlots and C_EquipmentSet.GetIgnoredSlots(id)) or {}
+  for slot = 1, 19 do
+    if not ignored[slot] and not (skip and skip[slot]) then
+      local item = ids[slot]
+      if item == nil or item == 0 then out[slot] = true end
+    end
+  end
+  return out
+end
+
+-- Take off whatever is in `slot` and put it in the first bag with room. Returns false when there's no room (the
+-- caller then stops asking for it, so a full bag can't trap the gear gate in a loop that never fishes).
+-- GENERAL bags only (bag family 0): a profession bag, quiver or soul bag with room can't take armor, and counting
+-- one as room left the piece on and the gear gate asking for it on every press, so the key never fished (QC 9 B3).
+local function freeBag()
+  if not (C_Container and C_Container.GetContainerNumFreeSlots) then return nil end
+  for bag = 0, (NUM_BAG_SLOTS or 4) do
+    local free, family = C_Container.GetContainerNumFreeSlots(bag)
+    if (free or 0) > 0 and (family or 0) == 0 then return bag end
+  end
+  return nil
+end
+local function unequipSlot(slot)
+  if not GetInventoryItemID("player", slot) then return true end
+  local bag = freeBag()
+  if not bag then return false end
+  ClearCursor()
+  PickupInventoryItem(slot)
+  if bag == 0 then PutItemInBackpack()
+  else PutItemInBag(C_Container.ContainerIDToInventoryID(bag)) end
+  if CursorHasItem and CursorHasItem() then ClearCursor() end   -- the put was refused: never leave it on the cursor
+  return true
+end
+SBF._unequipSlot = unequipSlot
+
 local function useEquipmentSet(name)
   local id, _, _, numLost = setInfo(name)
   if not id then return end
@@ -440,6 +548,7 @@ local function useEquipmentSet(name)
       if link then EquipItemByName(link, slot) end
     end
   end
+  for slot in pairs(setEmptySlots(id, skip)) do unequipSlot(slot) end   -- what the set takes off
 end
 
 -- ---- snapshot / restore (gear package only; pole excluded) ----
@@ -448,8 +557,82 @@ for i = 1, 19 do EQUIP_SLOTS[i] = i end          -- standard equipment inventory
 
 local function snapshotGear()
   local snap = {}
-  for _, slot in ipairs(EQUIP_SLOTS) do snap[slot] = GetInventoryItemLink("player", slot) end
+  -- false = the slot was EMPTY, so the restore takes off whatever fishing put there (nil in an older snapshot
+  -- means "unknown": left alone)
+  for _, slot in ipairs(EQUIP_SLOTS) do snap[slot] = GetInventoryItemLink("player", slot) or false end
   SBF.CharGear().snapshot = snap
+end
+
+-- The restore runs as a VERIFIED loop, not one burst. The old restore fired EquipItemByName for all 19 slots in the
+-- same instant and threw the snapshot away. WoW: Forever drops equips fired together (the same item-lock problem as
+-- the set swap + pole, see applyProfileGear), so most of the old gear never went back on, and with the snapshot
+-- already spent nothing ever tried again. Now each pass equips only what is still wrong, waits, re-checks, and
+-- repeats until a run of SBFDB.restoreMaxTries passes puts nothing back. On Forever/Classic the main hand goes first and alone (it swaps out the
+-- two-handed pole, and the off hand can't go on until it has). The snapshot is spent only when everything is back
+-- or the tries run out, and anything that never went back is named in chat.
+local restoreGen = 0                             -- bumps when a new restore (or a gear apply) supersedes a running one
+-- A restore is mid-way (its snapshot is the REAL normal gear). A gear apply that lands now must keep that snapshot,
+-- not take a new one of the half-restored gear (QC 9 B4b: the fishing hat got recorded as "normal").
+local restoreInFlight = false
+local followGen = 0                              -- the Equip key's Forever follow-ups; a restore bumps it to stop them
+
+local function snapItemID(link)
+  return link and GetItemInfoInstant and (GetItemInfoInstant(link)) or nil
+end
+
+-- slot -> snapshot link for every snapshot piece that isn't worn in its slot right now
+-- (a snapshot slot of false = it was empty: listed as false while something is in it and a bag has room for it)
+local function restoreMissing(snap)
+  local out, n = {}, 0
+  for slot, link in pairs(snap) do
+    if link == false then
+      if GetInventoryItemID("player", slot) and freeBag() then out[slot] = false; n = n + 1 end
+    else
+      local want = snapItemID(link)
+      if want and GetInventoryItemID("player", slot) ~= want then out[slot] = link; n = n + 1 end
+    end
+  end
+  return out, n
+end
+
+-- `try` counts passes in a row that put nothing back (a pass that restores anything resets it), so a slow client
+-- that only takes a piece or two per pass still finishes; `lastN` is how many were missing on the previous pass.
+local function restorePass(gen, try, lastN)
+  if gen ~= restoreGen then return end           -- superseded (a new restore, or fishing gear went back on)
+  local cg = SBF.CharGear()
+  local snap = cg.snapshot
+  if not snap then return end
+  if InCombatLockdown() then SBF._gearPending = "restoreRetry"; return end   -- picks up again after combat
+  local missing, n = restoreMissing(snap)
+  if n == 0 then cg.snapshot = nil; restoreInFlight = false; return end
+  if lastN and n < lastN then try = 1 end        -- progress: the no-progress count starts over
+  local maxTries = SBFDB.restoreMaxTries or 4
+  if try > maxTries then
+    local names = {}
+    for slot, link in pairs(missing) do names[#names + 1] = link or ("slot " .. slot .. " left on") end
+    print(("|cff45c4a0SBF|r couldn't put back %d piece(s) of your normal gear: %s"):format(n, table.concat(names, ", ")))
+    cg.snapshot = nil; restoreInFlight = false
+    return
+  end
+  -- Forever/Classic: the main hand alone on the FIRST pass (it trades places with the two-handed pole), and only
+  -- when its piece is actually in the bags. Every pass after that tries all slots: a main hand that can't go back
+  -- (sold, banked) used to hold the whole restore on slot 16 until it gave up, leaving every other piece of the
+  -- fishing outfit on (QC 9 B4a).
+  local mhLink = missing[INVSLOT_MH]
+  local only = (CLASSIC_GEAR and try == 1 and lastN == nil and mhLink and SBF.BagItemLink(snapItemID(mhLink)))
+    and INVSLOT_MH or nil
+  for slot, link in pairs(missing) do
+    if not only or slot == only then
+      if link == false then unequipSlot(slot)  -- the slot was empty before fishing
+      -- the bag copy's live link first (Forever ignores some equip forms, see SBF.BagItemLink), else the snapshot link
+      else EquipItemByName(SBF.BagItemLink(snapItemID(link)) or link, slot) end
+    end
+  end
+  if C_Timer and C_Timer.After then
+    C_Timer.After(SBFDB.restoreRetryDelay or 0.6, function() restorePass(gen, try + 1, n) end)
+  else
+    cg.snapshot = nil; restoreInFlight = false   -- no timer (offline): one pass, as before
+  end
 end
 
 local function restoreGear()
@@ -462,10 +645,12 @@ local function restoreGear()
   -- Only while SBF has the fishing gear ON, and only ONCE: the snapshot is spent by the restore. A kept snapshot
   -- used to replay on every later "back to normal" (the idle revert for the interact range or camera alone, too),
   -- forcing days-old gear over whatever you had equipped by hand (QC 2026-09-29).
+  followGen = followGen + 1                       -- stop any Equip-key follow-up still waiting (QC 9 re-verify finding 4)
   if snap and cg.on then
     if InCombatLockdown() then SBF._gearPending = "restore"; return end   -- retry after combat (keep on=true)
-    for slot, link in pairs(snap) do if link then EquipItemByName(link, slot) end end
-    cg.snapshot = nil
+    restoreGen = restoreGen + 1
+    restoreInFlight = true
+    restorePass(restoreGen, 1)
   end
   -- Clear the "in fishing gear" flag even when there was NO snapshot to restore. Keeps state honest and,
   -- crucially, lets the idle observer stop: with a stuck on=true it (via ShouldIdleRestore) would otherwise
@@ -487,6 +672,9 @@ local function setEquipped(name)
         if SBF.BagItemLink(itemID) then return false end       -- a piece is in the bags: still to equip
         short = short + 1                                      -- not worn, not in the bags: missing
       end
+    end
+    for slot in pairs(setEmptySlots(id, skip)) do              -- a slot the set keeps empty still has something in it
+      if GetInventoryItemID("player", slot) and freeBag() then return false end
     end
     if short > 0 then warnMissing(name, short) end
     return true
@@ -552,16 +740,23 @@ local function applyProfileGear()
   -- started fishing here"). Note: on retail the pole lives in slot 28 (outside 1-19), so a pole you normally
   -- wear is untouched by snapshot/restore. On Forever/Classic the pole IS the main hand, so the snapshot holds
   -- your real weapons (main + off hand) and Restore puts them back in place of the pole.
-  if not SBF.CharGear().on then snapshotGear() end
+  -- Fishing gear going on: stop any restore still running. If one WAS running, its snapshot is the real normal
+  -- gear: keep it rather than re-snapshotting what's half put back.
+  local keepSnap = restoreInFlight and SBF.CharGear().snapshot ~= nil
+  restoreInFlight = false
+  restoreGen = restoreGen + 1
+  if not SBF.CharGear().on and not keepSnap then snapshotGear() end
   -- Pole: equip WITHOUT a destination slot. Passing slot 28 is rejected as "Invalid inventory dstSlot" —
   -- that param is only for items that fit multiple slots; a pole has one valid slot, so the no-slot form
   -- lets the game place it in the profession tool slot.
+  local poleOnlyStep = false
   if CLASSIC_GEAR and not poleOK and w.pole then
     -- Forever/Classic: the pole goes on ALONE this press. Fired in the same instant as an equipment-set swap, the
     -- swap locks the items it is moving and the pole equip is silently dropped. The set swap in turn skips the pole
     -- on Forever, so the set sat at 9/10 and every press re-tried both, forever. One step per press: pole now, then
     -- the set (if anything else is still missing) on the next press. Retail keeps the combined path below.
     EquipItemByName(SBF.PoleEquipArg(w.pole))
+    poleOnlyStep = not setOK and w.equipSet ~= nil   -- the set still follows on the next press
   else
     if not setOK and w.equipSet then useEquipmentSet(w.equipSet) end
     -- Retail equips the pole by its item id, as it always has; the bag-link form is a Forever workaround only.
@@ -570,8 +765,10 @@ local function applyProfileGear()
   SBF.CharGear().on = true
   -- Announce the active PROFILE (gold raid-warning flash), gated on the same toggle as the profile-swap
   -- flash. Shows the profile name (what you swapped INTO), not the gear-set name — the profile is the unit
-  -- the user thinks in; its gear set is just one of its settings.
-  if SBFDB.swapFlash and RaidNotice_AddMessage then
+  -- the user thinks in; its gear set is just one of its settings. ONCE per gear change: on Forever the pole-only
+  -- first step skips it, so the flash comes with the set on the second press (the same single flash retail gives
+  -- for its one combined press). A profile with a pole and no set still flashes on its only step.
+  if SBFDB.swapFlash and RaidNotice_AddMessage and not poleOnlyStep then
     RaidNotice_AddMessage(RaidWarningFrame, "SBF :: "..(w.name or "fishing"), { r = 1, g = 0.82, b = 0 })
   end
 end
@@ -607,6 +804,33 @@ function SBF.EquipForEdit()
   end)
 end
 function SBF.RestoreNormalGear() restoreGear() end           -- "Restore normal gear"
+
+-- The "Equip profile gear" KEY: the whole gear package in one go, the way the action press gets it over several.
+-- Resolves an empty pole box first (set pole / retail worn pole), like the press path; then, on Forever, where one
+-- apply puts on only the pole, follows up every gearFollowDelay seconds until the set is on too (capped). Without
+-- this the key put on just the pole, or with an empty box the set without a pole (QC 9 S3).
+function SBF.EquipProfileGearFull()
+  local w = SBF.working
+  if w and not w.pole and not (SBF.AdoptSetPole and SBF.AdoptSetPole())
+      and not (SBF.AutoPopulatePole and SBF.AutoPopulatePole()) and SBF.NoteMissingPole then SBF.NoteMissingPole() end
+  applyProfileGear()
+  -- Forever, nothing to put a pole on and none in hand: the key would otherwise do nothing at all. Say why.
+  if w and not (w.equipSet or w.pole) and SBFDB.warnNoPole ~= false and SBF.NoPoleToFish() then
+    SBF.WarnNoPole(); return
+  end
+  if not (CLASSIC_GEAR and C_Timer) then return end
+  local left = SBFDB.gearFollowMax or 3
+  followGen = followGen + 1
+  local gen = followGen
+  local function follow()
+    left = left - 1
+    -- a Restore (key, idle or login) since this press wins: never put the fishing gear back on top of it
+    if gen ~= followGen or left < 0 or InCombatLockdown() or not SBF.GearNeedsEquip() then return end
+    applyProfileGear()
+    C_Timer.After(SBFDB.gearFollowDelay or 0.6, follow)
+  end
+  C_Timer.After(SBFDB.gearFollowDelay or 0.6, follow)
+end
 
 -- The SINGLE "return to normal" entry point: packages every "back to normal" side-effect (gear + audio) in
 -- one place so callers (idle auto-restore, login restore, the Restore button) don't each have to know the
@@ -691,5 +915,6 @@ local gearFrame = CreateFrame("Frame")
 gearFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 gearFrame:SetScript("OnEvent", function()
   local pend = SBF._gearPending; SBF._gearPending = nil
-  if pend == "apply" then applyProfileGear() elseif pend == "restore" then restoreGear() end
+  if pend == "apply" then applyProfileGear() elseif pend == "restore" then restoreGear()
+  elseif pend == "restoreRetry" then restoreGen = restoreGen + 1; restoreInFlight = true; restorePass(restoreGen, 1) end
 end)

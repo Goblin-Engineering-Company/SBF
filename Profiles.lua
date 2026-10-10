@@ -166,7 +166,11 @@ function SBF.LoadWorking(id)
   SBF.SeedSlots(SBF.working.slots)   -- ensure every descriptor slot exists in the working copy
 end
 
-function SBF.MarkDirty() if SBF.working then SBF.working.dirty = true end end
+-- Stamps WHICH character made the edit: the working copy is account-wide but its gear (pole, set) is per character,
+-- and the login re-seed (Core.lua PLAYER_LOGIN) keeps an unsaved gear edit only for the character that made it.
+function SBF.MarkDirty()
+  if SBF.working then SBF.working.dirty = true; SBF.working.gearChar = SBF.CharKey and SBF.CharKey() or nil end
+end
 function SBF.IsDirty() return SBF.working and SBF.working.dirty or false end
 
 function SBF.SaveWorking()
@@ -301,6 +305,28 @@ function SBF.WorkingChanges()
       end
       for _, id in ipairs(pd.items or {}) do
         if not wSet[id] then out[#out + 1] = label .. ": removed " .. itemName(id) end
+      end
+      -- same items, new order: the run order is an edit too (the close prompt missed it, QC 9 re-verify)
+      do
+        local wi, pi = wd.items or {}, pd.items or {}
+        if #wi == #pi and #wi > 1 then
+          local sameSet, sameOrder = true, true
+          for k, id in ipairs(wi) do
+            if not pSet[id] then sameSet = false end
+            if pi[k] ~= id then sameOrder = false end
+          end
+          if sameSet and not sameOrder then out[#out + 1] = label .. ": run order changed" end
+        end
+      end
+
+      -- an item / spell / toy dropped into an action slot (fishing/interact/heal/combat)
+      for _, f in ipairs({ "item", "spell", "toy" }) do
+        if wd[f] ~= pd[f] then
+          local v = wd[f]
+          local nm = v ~= nil and ((f == "spell" and C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(v))
+            or (f ~= "spell" and itemName(v)) or tostring(v))
+          out[#out + 1] = label .. ((v ~= nil) and (": " .. f .. " -> " .. tostring(nm)) or (": " .. f .. " cleared"))
+        end
       end
 
       -- macro body (action slots: fishing/interact/heal/combat) changed

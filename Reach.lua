@@ -9,7 +9,8 @@
 --   "mouseover" = the interact keys (and the fishing key in one-button mode) become Blizzard's Interact with
 --                 Mouseover: point at the bobber and press.
 --   "off"       = leave the keys alone. Default on retail.
--- An optional sound (SBFDB.reachSound) plays once per out-of-reach cast.
+-- An optional alert (SBFDB.reachSound: the on-screen message plus a sound, or the message alone) fires once per
+-- out-of-reach cast.
 -- (no addon-namespace use: everything here hangs off the SBF global)
 SBF = SBF or {}
 
@@ -34,7 +35,16 @@ function SBF.ReachMode()
   return m
 end
 
+-- The alert itself: the on-screen message for this mode. Shared by the real out-of-reach moment and the Test button.
+function SBF.ShowReachAlert(mode)
+  if SBFDB.reachAlert == false or not UIErrorsFrame then return end
+  local msg = SBF.REACH_ALERT[mode or SBF.ReachMode()]
+  if msg then UIErrorsFrame:AddMessage(msg, 1, 0.82, 0) end
+end
+
+-- reachSoundMode "none" = the message alone, no sound (the "No sound (message only)" choice in Settings)
 function SBF.PlayReachSound()
+  if SBFDB.reachSoundMode == "none" then return end
   if SBFDB.reachSoundMode == "file" and SBFDB.reachSoundFile and SBFDB.reachSoundFile ~= "" then
     return PlaySoundFile(SBFDB.reachSoundFile, "Master")
   end
@@ -79,10 +89,12 @@ function SBF.BobberOutOfReach()
         tostring(C_CVar.GetCVar("SoftTargetInteractRange"))))
     end
     local mode = SBF.ReachMode()
-    if SBFDB.reachSound then SBF.PlayReachSound() end
-    if SBFDB.reachAlert ~= false and UIErrorsFrame then
-      local msg = SBF.REACH_ALERT[mode]
-      if msg then UIErrorsFrame:AddMessage(msg, 1, 0.82, 0) end
+    -- ONE switch for the whole alert: the "Out of reach" row's checkbox (reachSound) turns off the on-screen
+    -- message along with the sound. It used to cover only the sound, so the message kept popping up with
+    -- nothing in Settings to stop it. For the message without a sound, pick "No sound (message only)".
+    if SBFDB.reachSound then
+      SBF.PlayReachSound()
+      SBF.ShowReachAlert(mode)
     end
     if not SBF._reachTipShown and SBFDB.reachTip ~= false then     -- once per session: the camera caveat
       SBF._reachTipShown = true

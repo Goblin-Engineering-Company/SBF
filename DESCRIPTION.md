@@ -18,6 +18,7 @@ SBF runs on WoW: Forever, the same download as retail. One key still does it all
 - **Catches count as catches.** The classic Fishing spell is recognized, so every fish lands in your log and stats, and your Fishing skill shows up in the header and on the Skill Book tab.
 - **Bobber reach that fails fast.** Some Forever casts land farther out than your interact key can grab. SBF stretches the key's reach while you fish, and when a bobber still lands too far, it notices within about a second and turns your next press into a fresh cast. Out-of-reach casts get their own line on the Stats tab and never count against your catch rate.
 - **Combat still swings back.** Forever has no Single-Button Assistant, so the default combat action is plain auto-attack. Drag in your own macro any time.
+- **No pole, no cast.** Press your fishing key with no pole in hand and nothing set up to put one on, and SBF stops and tells you how to fix it instead of casting into the game's error.
 
 Install it the same way: drop the `SBF` folder into the Forever game folder's `Interface/AddOns`.
 
@@ -25,7 +26,7 @@ Install it the same way: drop the `SBF` folder into the Forever game folder's `I
 
 - **The cast loop**: cast, catch, recast, on one keybind (secure, Blizzard-legal buttons, no automation, one action per press, always).
 - **Buffs and consumables**: lures, bobbers, food, and drink are managed as a rotation. Whatever's missing or expired gets refreshed on your next press, then it's straight back to fishing. Items you own and spells you know are detected automatically.
-- **Gear swapping**: switch into your fishing setup and back out again without touching the character pane. The pole in your profile's Fishing pole box is the only one SBF puts on. Leave the box empty and SBF uses the pole saved in your gear set, or on retail the pole in your fishing tool slot, so there's usually nothing to set up by hand.
+- **Gear swapping**: switch into your fishing setup and back out again without touching the character pane. The pole in your profile's Fishing pole box is the only one SBF puts on. Leave the box empty and SBF uses the pole saved in your gear set, or on retail the pole in your fishing tool slot (unless you cleared the box yourself). Want the gear on or off right now? "Equip profile gear" and "Restore normal gear" each have their own key on the Keybinds page.
 - **Ultra-fast looting, when you want it**: turn it on in Settings and catches are scooped the moment the loot window appears. It ships off, because plenty of people like seeing what they pulled up. Everything is configurable.
 - **Combat safety**: everything defers politely when combat starts and picks back up when it ends.
 
@@ -38,7 +39,7 @@ Install it the same way: drop the `SBF` folder into the Forever game folder's `I
 
 ## Profiles
 
-Per-character or Warband-wide configuration. Combat behavior, gear, and rotation slots can differ per character, so your main and your leveling alt can each fish their own way. Each profile keeps its own fishing pole, so a spot that needs a special pole stays set up the way you left it.
+Per-character or Warband-wide configuration. Combat behavior, gear, and rotation slots can differ per character, so your main and your leveling alt can each fish their own way. Each profile keeps its own fishing pole, so a spot that needs a special pole stays set up the way you left it. Close SBF with changes you haven't saved and it asks first: Save, Discard, or Keep editing.
 
 ## Optional: take your data with you
 

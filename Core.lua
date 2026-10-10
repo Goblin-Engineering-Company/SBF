@@ -94,6 +94,7 @@ local DB_DEFAULTS = {
                         -- preserves current behavior; onboarding can flip it for new users.
   autoSwap = true,      -- auto-swap the active profile by location (zone-driven; see Profiles.OnZoneMaybeChanged)
                         -- (runtime field SBFDB._lastTiers is set in code, not defaulted here)
+  warnUnsavedOnClose = true, -- closing the SBF window with unsaved profile edits asks Save / Discard / Keep editing
   swapFlash = true,     -- flash the swapped-in profile's name as a raid-warning on an auto-swap
   autoDismount = false, -- on a GROUND mount, fire /dismount so you can fish (never while flying)
   -- Observation lane (see learnBuff): keep watching what a CATALOGUED item's buff actually is, once per
@@ -109,6 +110,8 @@ local DB_DEFAULTS = {
                          -- controller buttons generate PAD* binding tokens SBF can bind. Unticking leaves
                          -- the CVar alone (the user may use the gamepad elsewhere). May need a /reload.
   sitBeforeCast = true, -- prepend /sit to each fishing cast (stationary = safer)
+  guardFishingOff = true, -- turning the Cast Fishing slot OFF from its row name takes a Shift+click (a stray
+                          -- click there silently turned the action key into a combat-only key)
   refreshSkillOnCast = true, -- one-shot: flash the Fishing Journal on the FIRST fishing press when the
                         -- per-expansion skill isn't loaded yet (Blizzard only hands it over after the journal
                         -- opens once). Rides the existing fishing button; replaced the old secure buttons.
@@ -178,6 +181,11 @@ local DB_DEFAULTS = {
                         -- the box yourself. WoW: Forever never fills it from what you wear (Gear.lua AutoPopulatePole).
   -- gear snapshot + "in fishing gear" flag are PER-CHARACTER now: SBFDB.charGear[name-realm].{snapshot,on}
   -- (see Gear.lua SBF.CharGear). The old account-wide gearSnapshot/profileGearOn are migrated then dropped.
+  warnNoPole = true,        -- Forever: a fishing press with no pole to put on stops and says why (Gear.lua WarnNoPole)
+  gearFollowMax = 3,        -- Forever: the Equip-gear key's follow-up applies (pole first, then the set)
+  gearFollowDelay = 0.6,    -- seconds between those follow-ups
+  restoreMaxTries = 4,      -- gear restore gives up after this many passes in a row that put nothing back
+  restoreRetryDelay = 0.6,  -- seconds between gear-restore passes (each re-checks what's still not back on)
   idleRestoreEnabled = true,  -- ON by default: after this long with no action press, auto-restore your normal gear
   idleRestoreSeconds = 30,    -- THE idle window (s): one clock, three effects — gear auto-restore (gated by the
                               -- flag above), focus-audio restore, and dropping fishing mode into standby (always;
@@ -200,7 +208,8 @@ local DB_DEFAULTS = {
                         -- kept modest so the columnar list stays smooth — editable ("show") on the Log tab
   logSearchMode = "highlight",  -- Log-tab search mode: "highlight" (tint + next/prev jump) | "filter" (show only matches)
   statsRefresh = "live",-- Stats-tab auto-refresh: "live" (redraw on each logged event) | 1/2/5 (timer secs) | "off" (manual)
-  reachSound = true,    -- play a sound once when the bobber lands beyond the interact key's reach (Reach.lua)
+  reachSound = true,    -- the out-of-reach alert (on-screen message + sound) once per far cast (Reach.lua)
+  -- reachSoundMode "none" = message only, no sound
   reachSoundMode = "kit",
   reachSoundId = 8959,
   reachSoundFile = "",
@@ -289,7 +298,8 @@ end
 -- their own combat guards, not secure casts) keyed in SBFDB.binds like slots. Plain Buttons whose OnClick
 -- runs the function; SBF.Apply wires their override bindings off SBFDB.binds["equipGear"/"restoreGear"].
 local GEAR_ACTIONS = {
-  equipGear   = function() SBF.EquipProfileGear() end,
+  -- stamps the action clock, or an earlier fishing session's idle timer undoes the equip within a second (QC 9 S1)
+  equipGear   = function() SBF.lastActionAt = GetTime(); SBF.EquipProfileGearFull() end,
   restoreGear = function() SBF.RestoreNormalGear() end,
 }
 local gearActionBtns = {}
@@ -1443,6 +1453,7 @@ idleFrame:SetScript("OnUpdate", function(_, elapsed)
   -- protected in combat); combat just defers the drop to a later 1s tick, which is fine — combat IS activity.
   if SBF.ShouldDropFishingMode and SBF.ShouldDropFishingMode(now) and not InCombatLockdown() then
     SBF.fishingModeActive = false
+    SBF._camApplied = nil                -- the saved fishing camera (if used) applies again on the next fishing run
     JumpController.Clear()               -- pollFrame is asleep now, so nothing else would release an override
   end
 end)
@@ -1987,7 +1998,6 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
       -- the recast race the freeze was meant to fix. It is read live at the verdict instead, attributed by
       -- cast identity. Two signals, two lifetimes: do not treat them as one class again.
       local oorCast, unreachCast = SBF._chanOOR, SBF._chanUnreachable   -- frozen at the stop like `reeled` (a recast zeroes them)
-      SBF._faceViewDone = nil                  -- face-forward camera re-aims on the NEXT cast press (Gear.lua)
       local reeled = SBF._chanReeled           -- true = reel press seen · false = provably none · nil = keys unreadable
       -- FREEZE THE REASON TOO. The block above says every per-cast input the verdict reads must be frozen at
       -- the stop, and this one was not: the verdict runs 0.8s late, resetReelWatch() nils _reelBlindWhy on the
@@ -2121,6 +2131,16 @@ function SBF.NativeKeyOfKind(command, kind) return GECBind.KeyOfKind(command, ki
 -- in that order. (The per-slot popups + master key still read/write binds[id] — back-compat preserved.)
 -- FISHING is the exception: its keys live in the NATIVE binding (SBF.FISHING_CMD), so we read them from
 -- there — that's what the dynamic loot override rebinds while the line is out.
+-- Is this key (combo) the fishing key, SBF's loot/interact key or the game's Interact with Target key? Those always
+-- stay fishing / loot: a gear key may not take one over (Apply skips it, the Keybinds row refuses it).
+function SBF.IsMainKey(combo)
+  if not combo or combo == "" then return false end
+  for _, k in ipairs(SBF.BindsFor("fishing") or {}) do if k == combo then return true end end
+  for _, k in ipairs(SBF.BindsFor("interact") or {}) do if k == combo then return true end end
+  for _, k in ipairs((GECBind and GECBind.Keys and GECBind.Keys("INTERACTTARGET")) or {}) do if k == combo then return true end end
+  return false
+end
+
 function SBF.BindsFor(id)
   if id == "fishing" then return GECBind.Keys(SBF.FISHING_CMD) end
   local out = {}
@@ -2337,9 +2357,25 @@ function SBF.Apply()
 
   -- gear pseudo-actions (not in ns.SLOTS, so not covered by EachDef): bind their combos to the plain
   -- click-buttons created above. Same bind keys (Key1/Key2/Controller), same override owner (cleared above).
+  -- They're bound AFTER the slots on the same owner, so a gear key that is also the fishing or loot key would take
+  -- that key over and the press would equip instead of cast (QC 9 S2). Those keys always stay fishing / loot.
   for id, btn in pairs(gearActionBtns) do
     for _, binding in ipairs(SBF.BindsFor(id)) do
-      SetOverrideBindingClick(bindOwner, false, binding, btn:GetName())
+      if SBF.IsMainKey(binding) then
+        if SBF.Anomaly then
+          SBF.Anomaly("gear-key-clash", "gear key %s for '%s' is also the fishing or loot key - left on fishing/loot.",
+            tostring(binding), tostring(id))
+        end
+        -- and say so in chat, once per key per session: a skipped key that just loots is otherwise a mystery
+        SBF._gearClashSaid = SBF._gearClashSaid or {}
+        if not SBF._gearClashSaid[binding] then
+          SBF._gearClashSaid[binding] = true
+          print(("|cff45c4a0SBF|r |cffffd100%s|r is your fishing or loot key, so it stays on fishing/loot and won't "
+            .. "run the gear key bound to it. Pick another key on the Keybinds page."):format(binding))
+        end
+      else
+        SetOverrideBindingClick(bindOwner, false, binding, btn:GetName())
+      end
     end
   end
 
@@ -2508,6 +2544,21 @@ function SBF.Apply()
         return
       end
       local macro, label, slotKey, timed = buildPressMacro(true)   -- real press: may emit the restock warning
+      -- Forever: this press would cast Fishing with no pole in hand. Stop and tell the player how to fix it,
+      -- instead of letting the game's "requires a fishing pole" error be the only clue. Only the default cast:
+      -- a custom macro in the Cast Fishing slot may equip a pole itself. warnNoPole = false turns it off.
+      if slotKey == "fishing" and SBFDB.warnNoPole ~= false and SBF.NoPoleToFish and SBF.NoPoleToFish() then
+        local fd = SBF.SlotDef("fishing") or {}
+        if not (fd.skip or (fd.macro and fd.macro ~= "") or fd.item or fd.spell or fd.toy) then
+          local combatDef = SBF.SlotDef("combat")
+          local cl = (not (combatDef and combatDef.skip)) and combatLine(combatDef) or nil
+          self:SetAttribute("type", "macro")
+          self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
+          applyMacro(self, cl and ("/stopmacro [nocombat]\n" .. guardCombat(cl)) or "", "no-pole")
+          if SBF.WarnNoPole then SBF.WarnNoPole() end
+          return
+        end
+      end
       announce(describeAction(slotKey))
       self:SetAttribute("type", "macro")
       self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
@@ -3233,9 +3284,16 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
         -- the equipSet/pole of whichever character last edited it. Re-seed gear from THIS character's ProfileGear
         -- so an alt never SHOWS or SAVES another character's pole/set. (Char key is reliable here at PLAYER_LOGIN;
         -- the LoadWorking branch below already routes gear through ProfileGear, so only the adopt path needs this.)
-        if SBF.ProfileGear then
+        -- EXCEPT this character's own unsaved edit: re-seeding that threw away a pole or set you'd picked but not
+        -- saved yet, on every /reload, with nothing to say so (2026-10-07). gearChar is stamped by SBF.MarkDirty.
+        local mine = SBF.working.dirty and SBF.working.gearChar and SBF.CharKey and SBF.working.gearChar == SBF.CharKey()
+        if SBF.ProfileGear and not mine then
           local pg = SBF.ProfileGear(pdb.working.id)
           SBF.working.equipSet, SBF.working.pole, SBF.working.poleCleared = pg.equipSet, pg.pole, pg.poleCleared
+          -- the gear now shown is THIS character's saved gear, so the unsaved-gear owner stamp no longer applies.
+          -- Left in place, the editing character's next login took this one's pole and set as its own unsaved
+          -- edit, and Save wrote them into its gear (QC 9 B2).
+          SBF.working.gearChar = nil
         end
       elseif SBF.LoadWorking then
         SBF.working = nil
@@ -3746,20 +3804,17 @@ SlashCmdList.SBF = function(msg)
     print(("|cff45c4a0SBF bobber reach|r: %s  |cff808080(/sbf reach <yards> | off | default)|r"):format(
       (SBFDB.bobberReach == nil and "default (60 on Forever/Classic, off on retail)")
       or (SBFDB.bobberReach == 0 and "off - your interact range is left alone") or (SBFDB.bobberReach .. " yards while fishing")))
-  elseif cmd == "reachzoom" then                              -- PUBLIC: minimum camera distance while fishing
+  elseif cmd == "reachview" and not SBF.CLASSIC_GEAR then
+    print("|cff45c4a0SBF|r The fishing camera is a WoW: Forever option.")   -- retail: never touch the player's views
+  elseif cmd == "reachview" then                              -- PUBLIC: the saved fishing camera (on/off, save, which slot)
     local v = rest:lower()
-    if v == "off" then SBFDB.reachZoom = 0; if SBF.RestoreFishingZoom then SBF.RestoreFishingZoom() end
-    elseif v == "default" then SBFDB.reachZoom = nil          -- bare /sbf reachzoom just prints the current value
-    elseif tonumber(v) then SBFDB.reachZoom = math.max(0, tonumber(v)) end
-    print(("|cff45c4a0SBF fishing zoom|r: %s  |cff808080(/sbf reachzoom <distance> | off | default)|r"):format(
-      (SBF.ReachZoom and SBF.ReachZoom() or 0) > 0 and ("at least " .. SBF.ReachZoom() .. " while fishing") or "off"))
-  elseif cmd == "reachview" then                              -- PUBLIC: face-forward camera on/off + which view slot
-    local v = rest:lower()
-    if v == "on" then SBFDB.reachFaceView = true
-    elseif v == "off" then SBFDB.reachFaceView = nil
-    elseif tonumber(v) and tonumber(v) >= 2 and tonumber(v) <= 5 then SBFDB.reachViewSlot = tonumber(v); SBFDB.reachFaceView = true end
-    print(("|cff45c4a0SBF face-forward camera|r: %s (view %d)  |cff808080(/sbf reachview on | off | <2-5>)|r"):format(
-      SBFDB.reachFaceView and "|cff33ff33ON|r" or "|cff808080OFF|r", tonumber(SBFDB.reachViewSlot) or 5))
+    if v == "on" then SBFDB.reachCamera = "saved"
+    elseif v == "off" then SBFDB.reachCamera = nil
+    elseif v == "save" then if SBF.SaveFishingCamera then SBF.SaveFishingCamera() end
+    elseif tonumber(v) and tonumber(v) >= 2 and tonumber(v) <= 5 then SBFDB.reachViewSlot = tonumber(v) end
+    print(("|cff45c4a0SBF fishing camera|r: %s (view %d)  |cff808080(/sbf reachview on | off | save | <2-5>)|r"):format(
+      (SBF.UseSavedCamera and SBF.UseSavedCamera()) and "|cff33ff33your saved camera when fishing starts|r" or "|cff808080off|r",
+      SBF.CameraViewSlot and SBF.CameraViewSlot() or 5))
   elseif cmd == "reachmode" then                              -- PUBLIC: what the key does for an out-of-reach bobber
     if SBF.REACH_MODES and SBF.REACH_MODES[rest] then SBFDB.reachMode = rest
     elseif rest == "default" then SBFDB.reachMode = nil end

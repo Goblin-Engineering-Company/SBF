@@ -93,7 +93,9 @@ StaticPopupDialogs["SBF_PROFILE_DIRTY_ONLEAVE"] = {
   text = "SBF - unsaved changes to profile \"%s\"\n%s\n\nSave them to this profile, discard them, or open SBF to review?",
   button1 = "Save", button2 = "Discard", button3 = "Open",
   OnAccept = function() SBF.SaveWorking(); SBF.DoSwap(SBF._pendingSwap) end,   -- Save (button1)
-  OnCancel = function() SBF.DoSwap(SBF._pendingSwap) end,                      -- Discard (button2)
+  -- Discard ONLY on a real click. StaticPopup_Show re-showing a visible dialog (every subzone change re-shows
+  -- these) calls OnCancel with reason "override", which used to discard the edits and swap (QC 9 B1).
+  OnCancel = function(_, _, reason) if reason == "clicked" then SBF.DoSwap(SBF._pendingSwap) end end, -- Discard (button2)
   OnAlt = function()                                                          -- Open (button3): review, no swap
     SBF._pendingSwap = nil                                                    -- they'll decide manually
     if SBF.OpenToTab then SBF.OpenToTab("buttons") end                        -- land on the Buttons page; working copy stays dirty
@@ -101,7 +103,7 @@ StaticPopupDialogs["SBF_PROFILE_DIRTY_ONLEAVE"] = {
   -- Escape must NOT run OnCancel (that's Discard+swap = data loss). noCancelOnEscape closes the dialog
   -- without running OnCancel: the user stays on their current (still-dirty) profile, NOT swapped. The
   -- zone already advanced _lastCascadeKey, so auto-swap won't re-nag until the location changes again.
-  timeout = 0, whileDead = true, hideOnEscape = true, noCancelOnEscape = true, preferredIndex = 3,
+  timeout = 0, whileDead = true, hideOnEscape = true, noCancelOnEscape = true, noCancelOnReuse = true, preferredIndex = 3,
 }
 -- Context-aware variant of the above for when the edited profile IS the Default (catch-all fallback). Same
 -- shape (3 buttons, no-swap-on-Escape), but the labels/actions are framed for Default: "Save to Default"
@@ -112,7 +114,9 @@ StaticPopupDialogs["SBF_PROFILE_DIRTY_DEFAULT"] = {
   text = "SBF - unsaved changes on the Default profile \"%s\"\n%s\n\nSave them to Default (the catch-all profile), start a New profile from them, or Discard before switching?",
   button1 = "Save to Default", button2 = "Discard", button3 = "New profile",
   OnAccept = function() SBF.SaveWorking(); SBF.DoSwap(SBF._pendingSwap) end,   -- Save to Default (button1)
-  OnCancel = function() SBF.DoSwap(SBF._pendingSwap) end,                      -- Discard (button2)
+  -- Discard ONLY on a real click. StaticPopup_Show re-showing a visible dialog (every subzone change re-shows
+  -- these) calls OnCancel with reason "override", which used to discard the edits and swap (QC 9 B1).
+  OnCancel = function(_, _, reason) if reason == "clicked" then SBF.DoSwap(SBF._pendingSwap) end end, -- Discard (button2)
   OnAlt = function()                                                          -- New profile (button3)
     -- Fork the current dirty edits into a NEW named profile, then swap. Chain the name-entry popup: on
     -- accept, SaveWorkingAsNew moves the edits off Default (reverting Default clean) into the new profile,
@@ -124,7 +128,24 @@ StaticPopupDialogs["SBF_PROFILE_DIRTY_DEFAULT"] = {
     end
     StaticPopup_Show("SBF_NEW_PROFILE")
   end,
-  timeout = 0, whileDead = true, hideOnEscape = true, noCancelOnEscape = true, preferredIndex = 3,
+  timeout = 0, whileDead = true, hideOnEscape = true, noCancelOnEscape = true, noCancelOnReuse = true, preferredIndex = 3,
+}
+-- Closing the SBF window with unsaved profile edits (SBFDB.warnUnsavedOnClose). Unsaved edits are easy to forget:
+-- the window closes, you fish, and the next Revert, profile swap or other character's login quietly drops them.
+-- Save writes them, Discard reverts, Keep editing re-opens the window. Escape keeps them unsaved (no data loss).
+StaticPopupDialogs["SBF_UNSAVED_ON_CLOSE"] = {
+  text = "SBF - you didn't save your changes to profile \"%s\"\n%s\n\nSave them now?",
+  button1 = "Save", button2 = "Discard", button3 = "Keep editing",
+  OnAccept = function()
+    if SBF.SaveWorking then SBF.SaveWorking() end
+    local p = SBF._optPanel; if p and p._updateSaveState then p._updateSaveState() end
+  end,
+  OnCancel = function(_, _, reason)   -- Discard on a real click only (a re-show passes "override", QC 9 B1)
+    if reason ~= "clicked" then return end
+    local p = SBF._optPanel; if p and p._revertEdits then p._revertEdits() end
+  end,
+  OnAlt = function() local p = SBF._optPanel; if p then p:Show() end end,
+  timeout = 0, whileDead = true, hideOnEscape = true, noCancelOnEscape = true, noCancelOnReuse = true, preferredIndex = 3,
 }
 -- Name-entry prompts for Add / Duplicate. Both carry an edit box; Add starts blank, Duplicate prefills
 -- "<name> copy" (set in OnShow from SBF._profilePopup.prefill). OnAccept reads the box and routes to
@@ -569,13 +590,15 @@ local function Build()
 
   -- Revert wiring (saveBtn/revertBtn were created up top, before reflowSlots/rebuildRows existed):
   -- discard the working copy's edits, rebuild the rows from the reverted copy, refresh enabled state.
-  revertBtn:SetScript("OnClick", function()
+  local function revertEdits()
     if SBF.RevertWorking then SBF.RevertWorking() end
     rebuildRows()
     if SBF.Apply then SBF.Apply() end
     updateSaveState()
     if refreshProfileBar then refreshProfileBar() end   -- redraw bindings/name from the reverted copy
-  end)
+  end
+  panel._revertEdits = revertEdits                      -- the unsaved-on-close popup's Discard
+  revertBtn:SetScript("OnClick", revertEdits)
   revertBtn:SetScript("OnEnter", function(self)
     showTip(self, "Discard unsaved slot edits", "Reloads the slots from the saved profile.")
   end)
@@ -1424,17 +1447,24 @@ local function Build()
   local _widest = 0
   for _, s in ipairs(SOUND_LABELS) do _lw:SetText(s); _widest = math.max(_widest, _lw:GetStringWidth() or 0) end
   local SOUND_CHECK_W = math.ceil(26 + _widest + 8)   -- indent(0)+CB_HIT(24)+gap(2) + widest label + pad
-  local function soundRowSpec(label, keys, play, key)
+  -- opts.silent = a label for a "no sound" choice at the top of the list (saved as mode "none"), for a row whose
+  -- checkbox also drives something besides the sound (the out-of-reach message).
+  local function soundRowSpec(label, keys, play, key, opts)
     local dd = CreateFrame("DropdownButton", nil, pBe, "WowStyle1DropdownTemplate")
     dd:SetSize(190, 22); Theme.SkinDropdown(dd)
     dd:SetupMenu(function(_dd, rootMenu)
       local fileVar = keys.enable .. "File"
+      if opts and opts.silent then
+        rootMenu:CreateRadio(opts.silent,
+          function() return SBFDB[keys.mode] == "none" end,
+          function() SBFDB[keys.mode] = "none"; if play then play() end end)
+      end
       for _, o in ipairs(SOUND_CHOICES) do
         rootMenu:CreateRadio(o.label,
           function()
             if o.filePath then return SBFDB[keys.mode] == "file" and SBFDB[fileVar] == o.filePath end
             if o.file then return SBFDB[keys.mode] == "file" and not NAMED_SOUND_FILES[SBFDB[fileVar]] end
-            return SBFDB[keys.mode] ~= "file" and SBFDB[keys.id] == o.id
+            return SBFDB[keys.mode] ~= "file" and SBFDB[keys.mode] ~= "none" and SBFDB[keys.id] == o.id
           end,
           function()
             if o.filePath then SBFDB[keys.mode] = "file"; SBFDB[fileVar] = o.filePath
@@ -1453,6 +1483,26 @@ local function Build()
       { frame = dd }, { frame = t },
     }
   end
+
+  -- ---- Bobber reach: the saved fishing camera (Gear.lua SBF.UseSavedCamera / CameraViewSlot / SaveFishingCamera) ----
+  -- Built inside a function so its widgets cost this (very long) builder ONE local: Lua caps a function at 200.
+  local cam = (function()
+    local slotDD = CreateFrame("DropdownButton", nil, pBe, "WowStyle1DropdownTemplate")
+    slotDD:SetSize(110, 22); Theme.SkinDropdown(slotDD)
+    slotDD:SetupMenu(function(_dd, rootMenu)
+      for s = 2, 5 do
+        rootMenu:CreateRadio("View " .. s,
+          function() return SBF.CameraViewSlot and SBF.CameraViewSlot() == s end,
+          function() SBFDB.reachViewSlot = s end)
+      end
+    end)
+    helpTip(slotDD, "set.reachViewSlot")
+    local camSave = Theme.MakeButton(pBe, 150, "Save current camera",
+      function() if SBF.SaveFishingCamera then SBF.SaveFishingCamera() end end)
+    camSave:SetHeight(20)
+    helpTip(camSave, "set.reachSaveCamera")
+    return { slot = slotDD, save = camSave }
+  end)()
 
   -- The Settings page's zone-watch rows under the glow switch: none, the rows live on the World tab.
   local zgRowSpecs = {}
@@ -1621,6 +1671,13 @@ local function Build()
     { section = "Fishing behavior",
       { check = C("Sit before each cast",
           function() return SBFDB.sitBeforeCast end, function(v) SBFDB.sitBeforeCast = v end, "set.sitBeforeCast"), id = "sit" },
+      { check = C("Warn when there's no fishing pole to fish with",
+          function() return SBFDB.warnNoPole ~= false end,
+          function(v) SBFDB.warnNoPole = v and true or false end, "set.warnNoPole"),
+        hidden = not SBF.CLASSIC_GEAR },
+      { check = C("Shift+click to turn off Cast Fishing",
+          function() return SBFDB.guardFishingOff ~= false end,
+          function(v) SBFDB.guardFishingOff = v and true or false end, "set.guardFishingOff") },
       { check = C("Auto-dismount to fish  (never while flying)",
           function() return SBFDB.autoDismount end, function(v) SBFDB.autoDismount = v end, "set.autoDismount") },
       { check = C("Refresh skill on cast",
@@ -1712,7 +1769,10 @@ local function Build()
       { id = "advSub", hidden = (SBFDB.advancedMode == false),
         { check = C("Auto-swap profiles by location",
             function() return SBFDB.autoSwap ~= false end, function(v) SBFDB.autoSwap = v end, "set.autoSwap") },
-        { check = C("Flash on profile swap",
+        { check = C("Ask to save unsaved changes when closing SBF",
+          function() return SBFDB.warnUnsavedOnClose ~= false end,
+          function(v) SBFDB.warnUnsavedOnClose = v and true or false end, "set.warnUnsavedOnClose") },
+      { check = C("Flash on profile swap",
             function() return SBFDB.swapFlash ~= false end, function(v) SBFDB.swapFlash = v end, "set.swapFlash") },
         -- gear restore rides the shared idle timeout (the "Idle timeout" field under Fishing behavior)
         { check = C("Auto-restore gear when idle  (at the idle timeout)",
@@ -1730,17 +1790,18 @@ local function Build()
           function() return (SBF.ReachYards and SBF.ReachYards() or 0) > 0 end,
           function(v) SBFDB.bobberReach = (not v) and 0 or nil; if not v and SBF.RestoreBobberReach then SBF.RestoreBobberReach() end end,
           "set.bobberReach") },
-      { check = C("Zoom the camera out while fishing  (if you're closer)",
-          function() return (SBF.ReachZoom and SBF.ReachZoom() or 0) > 0 end,
-          function(v) SBFDB.reachZoom = (not v) and 0 or nil; if not v and SBF.RestoreFishingZoom then SBF.RestoreFishingZoom() end end,
-          "set.reachZoom") },
-      { check = C("Point the camera straight ahead on every cast  (uses WoW camera view 5)",
-          function() return SBFDB.reachFaceView and true or false end,
-          function(v) SBFDB.reachFaceView = v and true or nil end, "set.reachFaceView") },
+      -- the saved fishing camera: on/off + which view slot it lives in + "Save current camera"
+      { check = C("Use my saved camera when I start fishing",
+          function() return SBF.UseSavedCamera and SBF.UseSavedCamera() end,
+          function(v) SBFDB.reachCamera = v and "saved" or nil end, "set.reachCamera") },
+      { dir = "row", align = "center", gap = 6,
+        { note = { text = "Camera view slot:", color = "text" } }, { frame = cam.slot }, { frame = cam.save } },
       { check = C("Recast when the bobber lands out of reach",
           function() return SBF.ReachMode and SBF.ReachMode() == "recast" end,
           function(v) SBFDB.reachMode = v and "recast" or "mouseover" end, "set.reachRecast") },
-      soundRowSpec("Out of reach", { enable = "reachSound", mode = "reachSoundMode", id = "reachSoundId" }, SBF.PlayReachSound, "set.reachSound"),
+      -- the checkbox is the whole alert (message + sound); Test previews both
+      soundRowSpec("Out of reach", { enable = "reachSound", mode = "reachSoundMode", id = "reachSoundId" },
+        function() SBF.PlayReachSound(); SBF.ShowReachAlert() end, "set.reachSound", { silent = "No sound (message only)" }),
     },
 
     { section = "Audio feedback",
@@ -3102,11 +3163,12 @@ local function Build()
       { lootGameBind = true, nativeCmd = "INTERACTTARGET",
         mouseField = "lootButton", mouseAllowNone = false, ctrl = true })
 
-    -- Gear: the two global gear pseudo-actions (NOT slots in ns.SLOTS — bound by id like the rest).
-    -- DEV-ONLY: a normal user only needs the two Main keybinds; per-slot + gear keybinds are a dev nicety.
-    sectionAt("Gear", true)
-    tableRow("equipGear", "Equip profile gear", { devOnly = true })
-    tableRow("restoreGear", "Restore normal gear", { devOnly = true })
+    -- Gear: the two global gear pseudo-actions (NOT slots in ns.SLOTS — bound by id like the rest). PUBLIC since
+    -- 2026-10-08: a key to put the fishing gear on, or go back to normal gear, without waiting on the first press
+    -- or the idle timeout. The per-slot keybinds below stay dev-only.
+    sectionAt("Gear")
+    tableRow("equipGear", "Equip profile gear")
+    tableRow("restoreGear", "Restore normal gear")
 
     -- Slots: every keyable slot in display order. Skip fishing/interact (their rows are under Main). DEV-ONLY.
     sectionAt("Slots", true)
@@ -3121,11 +3183,10 @@ local function Build()
 
     -- relayout: compute the visible columns + their x, then WALK items in build order assigning on-screen y by
     -- accumulating only the VISIBLE ones (a hidden item adds no height). Visibility:
-    --   * devOnly sections/rows (Gear + Slots) hide for a non-dev user — SBF is one-button fishing, the per-slot
-    --     and gear keybinds are a dev nicety;
+    --   * devOnly sections/rows (Slots) hide for a non-dev user — SBF is one-button fishing, the per-slot
+    --     keybinds are a dev nicety (the Gear rows are public);
     --   * the loot row hides outside two-button mode (single-button loots via the dynamic override);
-    --   * in non-dev only the Main rows remain, so we hide ALL section headers (the lone "Main" header is
-    --     redundant) for a clean two-row list.
+    --   * in non-dev the Main and Gear sections remain, so their headers show; the dev-only Slots header hides.
     -- This single accumulating pass subsumes the old loot-row "lift everything below" hack.
     local function relayout()
       local dev = SBF.IsDev()
@@ -3148,7 +3209,7 @@ local function Build()
       hdrLine:SetShown(dev)
 
       local rowVisible = function(r) return not ((r.devOnly and not dev) or (r.isLoot and lootHidden)) end
-      local secVisible = function(_) return dev end   -- non-dev: hide every section header (Main is redundant)
+      local secVisible = function(sec) return dev or not sec.devOnly end   -- non-dev: Main + Gear headers only
 
       -- start y: just below the header row in dev; reclaim the (now-hidden) header row's space in non-dev so
       -- the two Main rows sit right under the intro line with no empty gap.
@@ -3221,6 +3282,21 @@ local function Build()
   -- happens mid-combat (the transient restore flag is lost, but SBFDB.shown=false survives). Guarding here keeps
   -- SBFDB.shown=true through the auto-hide, so a reload just re-shows it. (QC: combat-hide persistence.)
   panel:HookScript("OnHide", function() if not SBF._optAutoHid then SBFDB.shown = false end end)
+  -- The player closed the window with unsaved profile edits: ask (Save / Discard / Keep editing). Not on the
+  -- combat auto-hide, and not in simple mode (edits auto-save there).
+  SBF._optPanel = panel
+  -- reopened while the prompt is up: the window itself is the answer (keep editing), so drop the prompt
+  panel:HookScript("OnShow", function() StaticPopup_Hide("SBF_UNSAVED_ON_CLOSE") end)
+  panel:HookScript("OnHide", function()
+    if SBF._optAutoHid or SBFDB.warnUnsavedOnClose == false or SBFDB.advancedMode == false then return end
+    if panel:IsShown() then return end   -- the whole UI was hidden (Alt+Z), not this window: nothing closed
+    if not (SBF.IsDirty and SBF.IsDirty()) then return end
+    -- dirty but nothing actually differs (a rename box left as it was, a field re-entered): nothing to ask about
+    if SBF.WorkingChanges and #SBF.WorkingChanges() == 0 then return end
+    local w = SBF.working
+    StaticPopup_Show("SBF_UNSAVED_ON_CLOSE", (w and w.name) or "?",
+      SBF.WorkingChangesText and ("|cffffd100" .. SBF.WorkingChangesText(8) .. "|r") or "")
+  end)
   local startTab = SBFDB.optTab or "buttons"
   ShowTab(startTab)
 end
