@@ -302,7 +302,7 @@ local function build()
   -- 4) combat --------------------------------------------------------------------
   header(body, PAD, y, W, "Combat  |cff9aa0aa(optional)|r"); y = y - 26
   para(body, PAD, y, W, SBF.CLASSIC_GEAR
-    and "Combat defaults to auto-attack at whatever you are already fighting. Drag in your own macro for real abilities."
+    and "Combat defaults to auto-attack (hunters also fire Auto Shot). Drag in your own macro for real abilities."
     or "Combat defaults to WoW's Single-Button Assistant, cast at whatever you are already fighting. Drag in your own macro to override.", "textDim"); y = y - 38
   -- the REAL action-slot widget; SBF.SlotDef("combat") routes to the PER-CHARACTER combat config
   ns.MakeItemButton(body, PAD, y, SBF.SlotDef("combat"), nil, "combat")

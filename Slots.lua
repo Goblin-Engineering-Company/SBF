@@ -57,8 +57,38 @@ local function assistedCombatAvailable()
   local ok, avail = pcall(C_AssistedCombat.IsAvailable)
   return ok and avail == true
 end
+-- A ranged auto-attack this character knows (hunter Auto Shot), as a localized "/cast !Name" line, or nil. The "!"
+-- keeps a second press from switching it off. Spell ids are configurable (SBFDB.rangedAutoSpells) so another
+-- ranged auto can be added without a rebuild.
+local RANGED_AUTO_SPELLS = { 75 }          -- Auto Shot
+local function knownSpellName(list)
+  for _, sid in ipairs(list) do
+    local known = (IsPlayerSpell and IsPlayerSpell(sid)) or (IsSpellKnown and IsSpellKnown(sid))
+    if known and C_Spell and C_Spell.GetSpellName then
+      local ok, nm = pcall(C_Spell.GetSpellName, sid)
+      if ok and nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then return nm end
+    end
+  end
+  return nil
+end
+local function rangedAutoLine()
+  local nm = knownSpellName((SBFDB and SBFDB.rangedAutoSpells) or RANGED_AUTO_SPELLS)
+  return nm and ("/cast !" .. nm) or nil
+end
+
+local FOREVER_MELEE_TAIL = "/startattack"
 local function defaultCombatTail()
-  if SBF.CLASSIC_GEAR and not assistedCombatAvailable() then return "/startattack" end
+  if SBF.CLASSIC_GEAR and not assistedCombatAvailable() then
+    -- A macro can't see distance and SBF can't rebuild the macro mid-fight, so the hunter default has to work at
+    -- BOTH ranges from one text, using only the two automatic attacks (no class abilities). Field tests on
+    -- Forever: Auto Shot THEN /startattack fired one arrow and went back to swinging (2026-10-12); Auto Shot alone
+    -- says "Target too close" in melee and never swings (2026-10-19). So melee auto first, then the ranged auto:
+    -- up close the swing runs and the shot fails "too close"; at range the shot takes over from the melee.
+    -- Only a character that knows the ranged auto (a hunter) gets the second line. combatRangedAuto = false = melee only.
+    local ranged = SBFDB and SBFDB.combatRangedAuto ~= false and rangedAutoLine()
+    if ranged then return FOREVER_MELEE_TAIL .. "\n" .. ranged end
+    return FOREVER_MELEE_TAIL
+  end
   return "/cast " .. assistedCombatName()
 end
 local function defaultCombatMacro() return "/targetenemy [noharm][dead]\n" .. defaultCombatTail() end
@@ -70,8 +100,24 @@ local DEFAULT_COMBAT_TAIL = "/cast " .. ASSISTED_COMBAT_FALLBACK
 local DEFAULT_COMBAT_MACRO = "/targetenemy [noharm][dead]\n" .. DEFAULT_COMBAT_TAIL
 ns.DEFAULT_COMBAT_MACRO = DEFAULT_COMBAT_MACRO
 -- Is this macro OUR default, in either the stored English form or this client's localized one?
+-- On Forever the default's text depends on the character's spells and on hidden settings, and every version of it
+-- has been seeded into somebody's SavedVariables. So a Forever default is recognised by SHAPE: our targetenemy
+-- line followed only by lines SBF itself generates (/startattack, /cast !<ranged auto>).
+local function isForeverDefaultShape(line)
+  if not SBF.CLASSIC_GEAR or type(line) ~= "string" then return false end
+  local rest = line:match("^/targetenemy %[noharm%]%[dead%]\n(.+)$")
+  if not rest then return false end
+  local ranged = knownSpellName((SBFDB and SBFDB.rangedAutoSpells) or RANGED_AUTO_SPELLS)
+  for l in (rest .. "\n"):gmatch("([^\n]*)\n") do
+    if not (l == FOREVER_MELEE_TAIL or (ranged and l == "/cast !" .. ranged)) then
+      return false
+    end
+  end
+  return true
+end
 local function isDefaultCombatMacro(line)
-  return line == DEFAULT_COMBAT_MACRO or line == defaultCombatMacro()
+  if line == DEFAULT_COMBAT_MACRO or line == defaultCombatMacro() then return true end
+  return isForeverDefaultShape(line)                 -- covers the old melee-only seed too; never on retail
 end
 ns.isDefaultCombatMacro = isDefaultCombatMacro
 
@@ -1308,14 +1354,155 @@ local function combatLine(c)
   -- custom macro (Cobra Shot, etc.) is left completely alone.
   -- Accept BOTH the stored English default and this client's localized one, so a character seeded before
   -- this fix keeps working. And emit the LOCALIZED tail: the stored text is what we recognise, not what we cast.
-  if isDefaultCombatMacro(line) and not (SBFDB and SBFDB.combatTarget) then
-    line = defaultCombatTail()
-  elseif line == DEFAULT_COMBAT_MACRO then
-    line = defaultCombatMacro()                   -- seeded-in-English character: cast the localized name
+  if isDefaultCombatMacro(line) then
+    -- always emit the CURRENT default (localized name, this client's attack lines), whatever text was stored
+    line = (SBFDB and SBFDB.combatTarget) and defaultCombatMacro() or defaultCombatTail()
+  end
+  -- A fight that starts with the line out: the Fishing channel keeps running (a hit doesn't break it), and while
+  -- it runs auto-attack won't start, so the press only produced "Target too close" from the shot line and never
+  -- swung (Forever hunter, 2026-10-19). Stop THE FISHING channel first, by name, so no other channel (a warlock's
+  -- Drain Life) is ever cut. In-combat only via guardCombat's [combat]; SBFDB.combatStopsFishing = false keeps it.
+  if line and line ~= "" and not (SBFDB and SBFDB.combatStopsFishing == false) then
+    local fname = SBF.FishingSpellName and SBF.FishingSpellName()
+    if fname and fname ~= "" then line = "/stopcasting [combat,channeling:" .. fname .. "]\n" .. line end
   end
   return line
 end
 ns.combatLine = combatLine
+
+-- ===== pets (per character) =====
+-- Two opt-in pet behaviours, both stored per character under SBFDB.charPet[name-realm]:
+--   stance : a pet stance SBF sets once per fishing run (the first press that gears up or fishes).
+--   fight  : while the PET is in combat but the player isn't yet, the action key sends the combat action instead
+--            of fishing. The game's [combat] macro condition only ever looks at the player, so without this a pet
+--            tanking next to you never triggers the combat half of the press.
+-- Stances go out as the client's own slash command (the SLASH_PET_* globals), so they work in every language and
+-- don't depend on where the stance button sits on the pet bar.
+function SBF.CharPet()
+  local k = SBF.CharKey()
+  SBFDB.charPet = SBFDB.charPet or {}
+  SBFDB.charPet[k] = SBFDB.charPet[k] or {}
+  return SBFDB.charPet[k]
+end
+-- Read-only view for the press path: never creates an entry, so a character that never opened the Pet options
+-- leaves nothing in SavedVariables.
+local NO_PET_CFG = {}
+local function petCfg()
+  local t = SBFDB and SBFDB.charPet
+  return (t and t[SBF.CharKey()]) or NO_PET_CFG
+end
+SBF.PetCfg = petCfg
+
+local PET_STANCES = {
+  { key = "passive",    label = "Passive",    slash = "SLASH_PET_PASSIVE1",    fallback = "/petpassive" },
+  { key = "defensive",  label = "Defensive",  slash = "SLASH_PET_DEFENSIVE1",  fallback = "/petdefensive" },
+  { key = "assist",     label = "Assist",     slash = "SLASH_PET_ASSIST1" },
+  { key = "aggressive", label = "Aggressive", slash = "SLASH_PET_AGGRESSIVE1" },
+}
+-- The stances this client has a slash command for, as { key, label, cmd }. Passive and Defensive exist on every
+-- client, so they fall back to the English command if the global is missing.
+function SBF.PetStances()
+  local out = {}
+  for _, st in ipairs(PET_STANCES) do
+    local cmd = _G[st.slash] or st.fallback
+    if type(cmd) == "string" and cmd ~= "" then out[#out + 1] = { key = st.key, label = st.label, cmd = cmd } end
+  end
+  return out
+end
+local function petStanceCmd(key)
+  if not key then return nil end
+  for _, st in ipairs(SBF.PetStances()) do if st.key == key then return st.cmd end end
+  return nil
+end
+
+local function petOut() return UnitExists and UnitExists("pet") and not (UnitIsDead and UnitIsDead("pet")) end
+
+-- Find the chosen stance on the pet bar: returns (isActive, barIndex, token), or nil when the bar has no such
+-- button. The bar names its stance buttons PET_MODE_<STANCE> (Defensive is PET_MODE_DEFENSIVEASSIST on Forever).
+local function petStanceOnBar(key)
+  if not GetPetActionInfo then return nil end
+  local want = "^PET_MODE_" .. key:upper()
+  for i = 1, (NUM_PET_ACTION_SLOTS or 10) do
+    local name, _, isToken, isActive = GetPetActionInfo(i)
+    if isToken and type(name) == "string" and name:find(want) then return (isActive and true or false), i, name end
+  end
+  return nil
+end
+function SBF.PetStanceActive(key) return (petStanceOnBar(key)) end
+
+-- The stance lines to put in front of this press's macro, or "". Only when a pet is actually out. If the pet bar
+-- can be read, the lines go out on any out-of-combat press where the pet ISN'T on the chosen stance (so a stance
+-- changed by hand, or a pet summoned later, is put right on the next press). If it can't be read, they go out
+-- once per fishing run (SBF._petStanceSent is cleared when fishing mode drops).
+-- Three ways to say the same thing, because which one a client honours varies and setting a stance twice is
+-- harmless: the slash command named after the bar's own token (/petdefensiveassist where that exists), else the
+-- plain one; then a click on the stance's pet-bar button in both click forms (a button listens for key-down OR
+-- key-up depending on the client's setting, so exactly one of the two lands).
+function SBF.PetStancePrefix()
+  if not petOut() then return "" end
+  local key = petCfg().stance
+  local cmd = petStanceCmd(key)
+  if not cmd then return "" end
+  local active, idx, token = petStanceOnBar(key)
+  if active == true then SBF._petStanceTries = nil; return "" end
+  if active == nil and SBF._petStanceSent then return "" end
+  -- a stance the bar reads but that never lights up: stop after a few presses instead of sending it forever
+  -- (cleared with the run, like _petStanceSent)
+  SBF._petStanceTries = (SBF._petStanceTries or 0) + 1
+  if SBF._petStanceTries > ((SBFDB and SBFDB.petStanceMaxTries) or 3) then return "" end
+  SBF._petStanceSent = true
+  local own = token and _G["SLASH_" .. token:gsub("^PET_MODE_", "PET_") .. "1"]
+  local out = ((type(own) == "string" and own ~= "") and own or cmd) .. " [nocombat]\n"
+  if idx then
+    -- [nomod]: with a modifier held (a Shift-bound fishing key) a click on a pet-bar button PICKS IT UP instead
+    -- of using it, which would lift the stance off the bar. The slash line above still covers that press.
+    out = out .. "/click [nocombat,nomod] PetActionButton" .. idx .. "\n"
+              .. "/click [nocombat,nomod] PetActionButton" .. idx .. " LeftButton 1\n"
+  end
+  return out
+end
+
+-- Is the pet fighting (and the option on)? Needs a pet that is in combat AND has a live hostile target: a pet
+-- flagged in combat with nothing to hit (a Passive pet being hit, or the flag lingering after a fight) would make
+-- the press fight thin air, and /startattack with no target grabs the nearest enemy.
+function SBF.PetFighting()
+  if not petCfg().fight or not petOut() then return false end
+  if not (UnitAffectingCombat and UnitAffectingCombat("pet")) then return false end
+  if not (UnitExists and UnitExists("pettarget")) or (UnitIsDead and UnitIsDead("pettarget")) then return false end
+  if UnitCanAttack and not UnitCanAttack("player", "pettarget") then return false end
+  return true
+end
+
+-- The Combat slot's action as a line, or nil when it is off or empty. The pet-fight paths only take the key off
+-- loot when there IS something to fight with (otherwise the press would do nothing at all).
+local function petCombatLine()
+  local c = SBF.SlotDef("combat")
+  if c and c.skip then return nil end
+  return combatLine(c)
+end
+function SBF.PetCanFight() return petCombatLine() ~= nil end
+
+-- The press macro for "my pet is fighting": the combat action WITHOUT the [combat] wrapper (the player isn't in
+-- combat yet, which is the whole point), optionally targeting what the pet is on first. A custom combat macro
+-- that guards its own lines with [combat] has that condition taken out for this press, and a
+-- "/stopmacro [nocombat]" line is dropped (it would end every pet-fight press). nil = not applicable.
+function SBF.PetFightMacro()
+  if not SBF.PetFighting() then return nil end
+  local cl = petCombatLine()
+  if not cl then return nil end
+  cl = cl:gsub("%[combat%]%s*", ""):gsub("%[combat,", "["):gsub(",combat%]", "]"):gsub(",combat,", ",")
+  local keep = {}
+  for line in (cl .. "\n"):gmatch("([^\n]*)\n") do
+    if not line:lower():match("^%s*/stopmacro%s*%[nocombat%]%s*$") then keep[#keep + 1] = line end
+  end
+  cl = table.concat(keep, "\n")
+  if petCfg().fightTarget ~= false then
+    -- keep a hostile target you already picked (this macro freezes on the button for the fight, so it runs on
+    -- every press); only otherwise take the pet's
+    cl = "/target [@target,harm,nodead] target; [@pettarget,harm,nodead] pettarget\n" .. cl
+  end
+  return cl
+end
 
 -- A verb + the specific item/spell NAME for a press, so chat says exactly what's happening
 -- ("applying Oversized Bobber", "activating Tuskarr Dinghy"), not the slot. Verb + fallback name

@@ -110,6 +110,10 @@ local DB_DEFAULTS = {
                          -- controller buttons generate PAD* binding tokens SBF can bind. Unticking leaves
                          -- the CVar alone (the user may use the gamepad elsewhere). May need a /reload.
   sitBeforeCast = true, -- prepend /sit to each fishing cast (stationary = safer)
+  combatRangedAuto = true, -- Forever default combat action: a known ranged auto-attack (hunter Auto Shot) follows melee auto
+  combatReleasesLoot = true, -- entering combat with a bobber out hands the fishing key back from loot to the combat
+                          -- action, so you defend yourself like on retail (false = keep the loot key for the fight).
+                          -- Replaces the old opt-in combatFreesKey (off by default), which is no longer read.
   guardFishingOff = true, -- turning the Cast Fishing slot OFF from its row name takes a Shift+click (a stray
                           -- click there silently turned the action key into a combat-only key)
   refreshSkillOnCast = true, -- one-shot: flash the Fishing Journal on the FIRST fishing press when the
@@ -1272,6 +1276,10 @@ local function DesiredOverride()
   end
   if UnitChannelInfo and UnitChannelInfo("player") and not hasAction(s.interact)
     and not SBFDB.requireTwoButtons then                   -- two-button mode: action key doesn't loot
+    -- pet fighting (opt-in): leave the key on the fishing button so the press swings instead of looting. Checked
+    -- before the reach branch (an out-of-reach bobber must not turn the press into a mouseover loot), and only
+    -- when the press really has a fight macro to send (Combat off/empty keeps the key on loot).
+    if SBF.PetFightMacro and SBF.PetFightMacro() then return nil, "petFight" end
     if SBF.BobberOutOfReach and SBF.BobberOutOfReach() then   -- the key can't reach this bobber
       if SBF.REACH_MOUSEOVER and SBF.REACH_MOUSEOVER[SBF.ReachMode()] then return "INTERACTMOUSEOVER", "reachMouseover" end
       return nil, "reachRecast"                                -- no override: the press runs the loop and recasts
@@ -1282,6 +1290,28 @@ local function DesiredOverride()
 end
 -- (Bobber reach: out-of-reach detection, the mouseover/recast modes and the interact-key switch live in
 -- Reach.lua; DesiredOverride and UpdateFishKey below call into it.)
+
+-- Entering combat with a bobber out: the fishing key is on the loot override, and overrides can't be changed
+-- once combat lockdown starts, so the key would stay "loot" for the whole fight and never reach the combat
+-- action. PLAYER_REGEN_DISABLED fires just BEFORE lockdown, so this is the one moment the key can be handed
+-- back to the fishing button (whose frozen macro carries the combat half, which starts by stopping the Fishing
+-- channel). On by default (SBFDB.combatReleasesLoot), like retail where you fight straight away; always on for a
+-- character with "Fight when my pet is fighting". Only when the Combat slot has an action: with Combat off or empty
+-- the button would hold nothing for the fight but the cast, so the key stays on loot. A JUMP override is left
+-- alone (releasing JUMP mid-press is the stuck-jump bug the controller exists to prevent).
+do
+  local f = CreateFrame("Frame")
+  f:RegisterEvent("PLAYER_REGEN_DISABLED")
+  f:SetScript("OnEvent", function()
+    if not SBFDB then return end
+    -- only when there's a combat action to hand the key to (Combat off/empty: keep loot)
+    if not (SBF.PetCanFight and SBF.PetCanFight()) then return end
+    local petOn = SBF.PetCfg and SBF.PetCfg().fight
+    if not (SBFDB.combatReleasesLoot ~= false or petOn) then return end
+    local cur = JumpController.Current()
+    if cur and cur ~= "JUMP" and not InCombatLockdown() then JumpController.Clear() end
+  end)
+end
 
 local prevFalling = false   -- for the swimming->falling RISING edge (the physical jump landing)
 local function UpdateFishKey()
@@ -1453,6 +1483,7 @@ idleFrame:SetScript("OnUpdate", function(_, elapsed)
   -- protected in combat); combat just defers the drop to a later 1s tick, which is fine — combat IS activity.
   if SBF.ShouldDropFishingMode and SBF.ShouldDropFishingMode(now) and not InCombatLockdown() then
     SBF.fishingModeActive = false
+    SBF._petStanceSent, SBF._petStanceTries = nil, nil   -- the pet stance (if set) goes out again on the next run
     SBF._camApplied = nil                -- the saved fishing camera (if used) applies again on the next fishing run
     JumpController.Clear()               -- pollFrame is asleep now, so nothing else would release an override
   end
@@ -2240,8 +2271,8 @@ end
 -- the same dependency, so the assert now covers it too. The one case that genuinely doesn't need the CVar: a
 -- single-button interact SLOT carrying a custom action or a non-Interact game binding - that press never
 -- touches soft-targeting, so we leave the player's client setting alone.
--- Re-asserted at login, when two-button mode is switched on, on every action press (PreClick), and on
--- CVAR_UPDATE (the accidental mid-session uncheck). Our own SetCVar re-fires CVAR_UPDATE; the cur == 3
+-- Re-asserted at login, when two-button mode is switched on, on every action press (PreClick), on
+-- CVAR_UPDATE (the accidental mid-session uncheck) and when combat ends (it never writes during combat). Our own SetCVar re-fires CVAR_UPDATE; the cur == 3
 -- early-return ends that loop.
 function SBF.EnsureInteractKeyCVar()
   if not SBFDB.requireTwoButtons then
@@ -2253,6 +2284,9 @@ function SBF.EnsureInteractKeyCVar()
   end
   local get, set = C_CVar and C_CVar.GetCVar, C_CVar and C_CVar.SetCVar
   if not (get and set) then return end
+  -- never in combat: soft-target settings are locked mid-fight and the refused write is blamed on SBF ("Interface
+  -- action failed"). The next out-of-combat press re-asserts it.
+  if InCombatLockdown and InCombatLockdown() then return end
   local cur = tonumber(get("softTargetInteract"))
   if cur == 3 then return end
   local ok = pcall(set, "softTargetInteract", "3")
@@ -2407,6 +2441,18 @@ function SBF.Apply()
       -- and the loot key can never stay dead longer than the next cast.
       if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar() end
 
+      -- Pet is fighting and the player isn't in combat yet (opt-in, per character): this press is the combat
+      -- action, not a cast or a gear change. Once the player is in combat the macro below freezes on the button
+      -- and keeps swinging; the first press after the fight rebuilds the normal loop.
+      local petMacro = SBF.PetFightMacro and SBF.PetFightMacro()
+      if petMacro then
+        announce("pet is fighting")
+        self:SetAttribute("type", "macro")
+        self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
+        applyMacro(self, petMacro, "pet-fight")
+        return
+      end
+
       -- Self-correct the active profile: if auto-swap is on and a different profile resolves for where we
       -- are (e.g. the login resolution ran before the map loaded and stuck on Default), switch now so the
       -- right gear/config is used. Skip while dirty (don't discard unsaved edits on a press; the zone
@@ -2448,7 +2494,10 @@ function SBF.Apply()
         local cl = (not (combatDef and combatDef.skip)) and combatLine(combatDef) or nil
         self:SetAttribute("type", "macro")
         self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
-        applyMacro(self, cl and ("/stopmacro [nocombat]\n" .. guardCombat(cl)) or "", "combat-hold")
+        -- the pet stance for this fishing run rides the gear-up press (a stance has no cast, so it can't
+        -- collide with the equip)
+        local stance = SBF.PetStancePrefix and SBF.PetStancePrefix() or ""
+        applyMacro(self, stance .. (cl and ("/stopmacro [nocombat]\n" .. guardCombat(cl)) or ""), "combat-hold")
         return
       end
 
@@ -2562,7 +2611,7 @@ function SBF.Apply()
       announce(describeAction(slotKey))
       self:SetAttribute("type", "macro")
       self:SetAttribute("item", nil); self:SetAttribute("spell", nil); self:SetAttribute("toy", nil)
-      applyMacro(self, macro, label or "action")
+      applyMacro(self, (SBF.PetStancePrefix and SBF.PetStancePrefix() or "") .. macro, label or "action")
       if timed and slotKey then
         SBFDB.lastFired = SBFDB.lastFired or {}
         SBFDB.lastFired[slotKey] = time()   -- mark this rotation slot as just used
@@ -3431,6 +3480,7 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     end
   elseif event == "PLAYER_REGEN_ENABLED" then
     if SBF._pending then SBF.Apply() end
+    if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar() end   -- skipped in combat; put it right now
     if SBF.MouseClear then SBF.MouseClear() end   -- never carry a stale mouse override binding out of combat
     armHeal("combat")   -- left combat: heal to full
   end

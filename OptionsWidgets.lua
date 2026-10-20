@@ -428,11 +428,11 @@ local function buildCatalogSlot(r, def0, slotKey, reflow)
   styleSlot(ehandle)
   ehandle:SetScript("OnClick", function()
     local ck = GetCursorInfo()
-    if ck == "item" or ck == "toy" then receiveDrop(); return end  -- held item dropped -> add it
+    if ck == "item" or ck == "toy" or (ck == "spell" and slotDef and slotDef.allowsSpell) then receiveDrop(); return end  -- held item/spell -> add
     expanded = not expanded; render()
   end)
   ehandle:SetScript("OnEnter", function(self)
-    local kinds = (slotDef and slotDef.allowsSpell) and "item, toy, macro, or spell" or "item, toy, or macro"
+    local kinds = (slotDef and slotDef.allowsSpell) and "item, toy, or spell" or "item or toy"
     showTip(self, expanded and "Click to collapse" or "Fill this slot",
       (not expanded) and ("Drag an " .. kinds .. " here to fill it.") or nil)
   end)
@@ -632,7 +632,7 @@ local function buildCatalogSlot(r, def0, slotKey, reflow)
       b:SetScript("OnClick", function(self, button)
         local d = D()     -- live slot table (the handler can outlive the working copy this render saw)
         local ck = GetCursorInfo()
-        if ck == "item" or ck == "toy" then receiveDrop(); return end  -- held item dropped on a cell -> add
+        if ck == "item" or ck == "toy" or (ck == "spell" and slotDef and slotDef.allowsSpell) then receiveDrop(); return end  -- held item/spell -> add
         if IsShiftKeyDown() and button == "RightButton" then           -- shift+right: works-in-all-zones (learned only)
           if self.learned and SBF.ItemKnow and SBF.ItemKnow(self.id) then
             local rec = SBF.ItemKnow(self.id)
@@ -745,7 +745,7 @@ local function MakeItemButton(parent, x, y, def0, onChange, slotId)
       GameTooltip:AddLine("Casts Fishing (wrapped with your sit/cast settings). Drag a macro/item here to override.", 0.85, 0.85, 0.85, true)
     elseif self._isDefault and self.slotId == "combat" then     -- dim gear-icon default
       GameTooltip:SetText("Combat - default", accentRGB())
-      GameTooltip:AddLine((SBF.CLASSIC_GEAR and "Auto-attacks" or "Casts Single-Button Assistant at") .. " whatever you are already fighting. Type /sbf addtarget on to also grab the nearest enemy. Drag your own macro here, or right-click to clear back to default.", 0.85, 0.85, 0.85, true)
+      GameTooltip:AddLine((SBF.CLASSIC_GEAR and "Auto-attacks (hunters also fire Auto Shot at range)" or "Casts Single-Button Assistant at") .. " whatever you are already fighting. Type /sbf addtarget on to also grab the nearest enemy. Drag your own macro here, or right-click to clear back to default.", 0.85, 0.85, 0.85, true)
     elseif def.item then GameTooltip:SetHyperlink(def.item)
     elseif def.spell and GameTooltip.SetSpellByID then GameTooltip:SetSpellByID(def.spell)
     elseif def.macro then

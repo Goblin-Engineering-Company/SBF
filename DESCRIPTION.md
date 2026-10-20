@@ -17,8 +17,9 @@ SBF runs on WoW: Forever, the same download as retail. One key still does it all
 - **Your pole goes in your main hand.** Forever has no profession tool slot, so SBF swaps your pole in when you fish and puts your real weapon and off-hand back when you stop. Equipment sets work too.
 - **Catches count as catches.** The classic Fishing spell is recognized, so every fish lands in your log and stats, and your Fishing skill shows up in the header and on the Skill Book tab.
 - **Bobber reach that fails fast.** Some Forever casts land farther out than your interact key can grab. SBF stretches the key's reach while you fish, and when a bobber still lands too far, it notices within about a second and turns your next press into a fresh cast. Out-of-reach casts get their own line on the Stats tab and never count against your catch rate.
-- **Combat still swings back.** Forever has no Single-Button Assistant, so the default combat action is plain auto-attack. Drag in your own macro any time.
+- **Combat still swings back.** Forever has no Single-Button Assistant, so the default combat action is auto-attack. Hunters swing up close and fire Auto Shot at range. Drag in your own macro any time.
 - **No pole, no cast.** Press your fishing key with no pole in hand and nothing set up to put one on, and SBF stops and tells you how to fix it instead of casting into the game's error.
+- **Pets (hunters and warlocks).** Keep your pet on a chosen stance while you fish, and let your fishing key fight when your pet is fighting (per character, off by default).
 
 Install it the same way: drop the `SBF` folder into the Forever game folder's `Interface/AddOns`.
 

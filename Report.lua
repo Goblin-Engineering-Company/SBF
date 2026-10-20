@@ -137,12 +137,14 @@ local BEHAVIOUR_KEYS = {
   "bounceBreakWithBuff", "surfaceClimbJump",
   -- Forever: the no-pole stop, the unsaved-changes prompt, the Cast Fishing guard, the gear restore tunables
   "warnNoPole", "warnUnsavedOnClose", "guardFishingOff", "restoreMaxTries", "restoreRetryDelay",
+  -- combat-key handover and the Forever default combat action
+  "combatReleasesLoot", "combatRangedAuto", "rangedAutoSpells", "petStanceMaxTries", "combatLockedCVars",
 }
 -- Settings whose DEFAULT is on (stored as nil until explicitly turned off, read with `~= false`). A nil
 -- here means "on", so silently omitting them would misreport the config — the reader can't tell an absent
 -- key from an off one.
 local DEFAULT_ON = { showUnownedItems = true, showUnownedToys = true, showWarbandItems = true,
-  warnNoPole = true, warnUnsavedOnClose = true, guardFishingOff = true }
+  warnNoPole = true, warnUnsavedOnClose = true, guardFishingOff = true, combatRangedAuto = true, combatReleasesLoot = true }
 
 -- tostring() on a table prints an ADDRESS, which is noise in a report and differs every session
 -- (`fallingBoats=table: 0x9db116570` in the first real report). Render something a human can read.
@@ -164,6 +166,12 @@ local function settingLines(out)
     elseif DEFAULT_ON[k] then parts[#parts + 1] = ("%s=true(default)"):format(k) end
   end
   out[#out + 1] = "settings: " .. table.concat(parts, " ")
+  -- this character's pet options (per character, so not in SBFDB's top level)
+  local pc = SBF.PetCfg and SBF.PetCfg()
+  if pc and next(pc) then
+    out[#out + 1] = ("pet     : stance=%s fight=%s fightTarget=%s"):format(tostring(pc.stance or "leave"),
+      tostring(pc.fight and true or false), tostring(pc.fightTarget ~= false))
+  end
   -- Call out anything deviating from shipped defaults. A wall of key=value hides the two that matter; the
   -- first real report had EVERY jump switch flipped and it took reading the source to notice.
   local SHIPPED = { jumpKeyState = true, ascentBreaker = true, bounceJump = true, bounceBreakWithBuff = false,

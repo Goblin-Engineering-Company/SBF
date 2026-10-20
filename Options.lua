@@ -1501,7 +1501,21 @@ local function Build()
       function() if SBF.SaveFishingCamera then SBF.SaveFishingCamera() end end)
     camSave:SetHeight(20)
     helpTip(camSave, "set.reachSaveCamera")
-    return { slot = slotDD, save = camSave }
+    -- pet stance while fishing (per character): "Leave alone" + every stance this client has a command for
+    local petDD = CreateFrame("DropdownButton", nil, pBe, "WowStyle1DropdownTemplate")
+    petDD:SetSize(140, 22); Theme.SkinDropdown(petDD)
+    petDD:SetupMenu(function(_dd, rootMenu)
+      rootMenu:CreateRadio("Leave alone",
+        function() return SBF.CharPet().stance == nil end,
+        function() SBF.CharPet().stance = nil end)
+      for _, st in ipairs(SBF.PetStances()) do
+        rootMenu:CreateRadio(st.label,
+          function() return SBF.CharPet().stance == st.key end,
+          function() SBF.CharPet().stance = st.key; SBF._petStanceSent = nil end)
+      end
+    end)
+    helpTip(petDD, "set.petStance")
+    return { slot = slotDD, save = camSave, pet = petDD }
   end)()
 
   -- The Settings page's zone-watch rows under the glow switch: none, the rows live on the World tab.
@@ -1675,6 +1689,9 @@ local function Build()
           function() return SBFDB.warnNoPole ~= false end,
           function(v) SBFDB.warnNoPole = v and true or false end, "set.warnNoPole"),
         hidden = not SBF.CLASSIC_GEAR },
+      { check = C("Fight instead of looting when combat starts",
+          function() return SBFDB.combatReleasesLoot ~= false end,
+          function(v) SBFDB.combatReleasesLoot = v and true or false end, "set.combatReleasesLoot") },
       { check = C("Shift+click to turn off Cast Fishing",
           function() return SBFDB.guardFishingOff ~= false end,
           function(v) SBFDB.guardFishingOff = v and true or false end, "set.guardFishingOff") },
@@ -1714,6 +1731,23 @@ local function Build()
         { frame = irf }, { note = { text = "sec", color = "text" } },
         { note = { text = "(SBF stands down until your next cast)", color = "textMuted" } },
       },
+    },
+
+    -- Pet options are per character (a hunter's choice shouldn't follow you to a mage). Always shown: checking
+    -- for a pet would make the section come and go as the pet is dismissed.
+    { section = "Pet (this character)",
+      { dir = "row", align = "center", pad = { l = 26 },
+        { note = { text = "Pet stance while fishing", color = "text",
+                   onBuild = function(fs) bigLabel(fs); helpLabel(fs, "set.petStance") end } },
+        { frame = cam.pet },
+      },
+      { check = C("Fight when my pet is fighting",
+          function() return SBF.CharPet().fight and true or false end,
+          function(v) SBF.CharPet().fight = v and true or nil end, "set.petFight") },
+      { dir = "row", align = "center", pad = { l = 26 },
+        { check = C("Target what my pet is attacking first",
+            function() return SBF.CharPet().fightTarget ~= false end,
+            function(v) SBF.CharPet().fightTarget = v and true or false end, "set.petFightTarget") } },
     },
 
     { section = "Item pickers",

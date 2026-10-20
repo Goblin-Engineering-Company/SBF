@@ -14,6 +14,22 @@ SBF.Help = {
     body = "If you press your fishing key with no pole in your hands and nothing set up to put one on, SBF "
       .. "doesn't cast. It tells you to drag your pole into the Fishing pole box on the Profile page, or to give "
       .. "the profile a gear set with a pole in it. Uncheck to let the cast go through anyway." },
+  ["set.petStance"] = { title = "Pet stance while fishing",
+    body = "Keeps your pet on this stance while you fish. If your pet is on a different stance when you press "
+      .. "your fishing key out of combat, SBF switches it (if the stance isn't on your pet bar, SBF sends it once per "
+      .. "fishing run instead). SBF doesn't restore the old stance when you stop. "
+      .. "Leave alone means SBF never touches your pet. Saved for this character only." },
+  ["set.petFight"] = { title = "Fight when my pet is fighting",
+    body = "If your pet is fighting something and you aren't in combat yet, your fishing key sends your Combat "
+      .. "action instead of casting, changing gear or looting. Needs an action in the Combat slot. "
+      .. "Saved for this character only." },
+  ["set.petFightTarget"] = { title = "Target what my pet is attacking first",
+    body = "When your fishing key fights for your pet, target the pet's enemy before your Combat action runs. "
+      .. "Uncheck if your own combat macro already picks its target." },
+  ["set.combatReleasesLoot"] = { title = "Fight instead of looting when combat starts",
+    body = "If something attacks you while your line is out, your fishing key drops the line and does your Combat "
+      .. "action for the rest of the fight, the way retail works. Uncheck to keep the key on looting until the fight "
+      .. "ends (a fish that bites mid-fight can still be reeled in). Needs an action in the Combat slot." },
   ["set.guardFishingOff"] = { title = "Shift+click to turn off Cast Fishing",
     body = "Turning off the Cast Fishing button takes a Shift+click on its name, so a stray click can't stop "
       .. "your action key from fishing. With Cast Fishing off, the key only does your combat action. "
@@ -119,7 +135,7 @@ SBF.Help = {
     body = "Play a sound when a cast fails (too shallow / not fishable water)." },
   ["set.bobberReach"] = { title = "Bobber reach",
     body = "While you fish, stretch the interact key's reach so it can reel bobbers that land farther out. Your own "
-      .. "setting comes back when you stop. The very farthest casts can still land beyond it, and the options below "
+      .. "setting comes back when you stop (or right after the fight, if you are in one). The very farthest casts can still land beyond it, and the options below "
       .. "decide what happens then. Fine-tune with /sbf reach <yards>. The bobber also has to land where your camera "
       .. "can see it: zoomed all the way in, or looking down at your feet, far casts always read as out of reach." },
   ["set.reachCamera"] = { title = "Use my saved camera",

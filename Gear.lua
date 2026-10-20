@@ -225,7 +225,39 @@ local AUDIO_CVARS = {
 }
 ns.AUDIO_CVARS = AUDIO_CVARS
 
-local function setCVarSafe(cvar, value) pcall(SetCVar, cvar, value) end
+-- Some client settings can't be changed in combat (SoftTargetInteractRange is one): the game refuses the write and
+-- blames SBF with "Interface action failed because of an AddOn" (Forever, 2026-10-19). A write to one of THOSE during
+-- combat lockdown is QUEUED (last value per setting wins) and made the moment combat ends. Every other setting (the
+-- Sound_* ones) is unprotected and is written straight away, as before: queuing them could lose the player's
+-- original volumes if they reloaded mid-fight. The locked list is configurable (SBFDB.combatLockedCVars).
+local COMBAT_LOCKED_CVARS = { SoftTargetInteractRange = true }
+local function combatLocked(cvar)
+  local t = (SBFDB and SBFDB.combatLockedCVars) or COMBAT_LOCKED_CVARS
+  return t[cvar] and true or false
+end
+local pendingCVars
+local function flushCVars()
+  local q = pendingCVars
+  pendingCVars = nil
+  if q then for cvar, value in pairs(q) do pcall(SetCVar, cvar, value) end end
+end
+do
+  local f = CreateFrame("Frame")
+  if f.RegisterEvent then
+    f:RegisterEvent("PLAYER_REGEN_ENABLED")
+    f:SetScript("OnEvent", flushCVars)
+  end
+end
+local function setCVarSafe(cvar, value)
+  if combatLocked(cvar) and InCombatLockdown and InCombatLockdown() then
+    pendingCVars = pendingCVars or {}
+    pendingCVars[cvar] = value
+    return
+  end
+  if pendingCVars then pendingCVars[cvar] = nil end   -- a newer out-of-combat write supersedes a queued one
+  pcall(SetCVar, cvar, value)
+end
+SBF.PendingCVars = function() return pendingCVars end   -- for the offline tests
 local function getCVarSafe(cvar) local ok, v = pcall(GetCVar, cvar); return ok and v or nil end
 
 -- write ONE focusAudio field to its CVar in the live "focus" form (vol -> "0".."1" string, tog -> "0"/"1").
@@ -395,6 +427,10 @@ end
 -- setting is saved, the next login still knows to restore).
 function SBF.RestoreBobberReach(keepFlag)
   local r = reachState(); if not r.on then return end
+  -- in combat the range can't be changed: leave everything as it is (flag still "applied") so the idle observer,
+  -- which asks again every second, puts it back once the fight is over. Clearing the flag on a queued write would
+  -- lose the restore if the player reloaded mid-fight.
+  if InCombatLockdown and InCombatLockdown() then return end
   setCVarSafe("SoftTargetInteractRange", r.snap or reachDefault())
   if not keepFlag then r.on = false end
 end
