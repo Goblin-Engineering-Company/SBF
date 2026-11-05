@@ -126,7 +126,7 @@ SBF.Help = {
     body = "Shift+left-click any item in a picker to hide it from that slot - useful when Blizzard strips an item's effect, or you just never want it offered. Turn this on to bring hidden items back into view (dimmed); shift+left-click one again to restore it. Hiding is per slot and account-wide, and items from SBF's shipped list ask for confirmation first." },
 
   ["set.hideMinimap"] = { title = "Hide the minimap button",
-    body = "Take SBF's button off the minimap ring. You can still open the window with /sbf, or from the AddOns button on the minimap - right-clicking SBF there puts the button back. Your button's position is remembered either way." },
+    body = "Take SBF's button off the minimap ring. Type /sbf to open the window and untick this to bring it back. If your minimap has an AddOns button, right-clicking SBF there puts it back too. Your button's position is remembered either way." },
 
   -- ===== Settings: Audio =====
   ["set.castSound"] = { title = "Fishing-start sound",
@@ -152,7 +152,7 @@ SBF.Help = {
   ["set.reachRecast"] = { title = "Recast when out of reach",
     body = "When the bobber lands beyond the interact key's reach, your next press recasts instead of doing "
       .. "nothing. Those casts are counted separately (Stats: Out of reach) and left out of your catch rate. "
-      .. "Unticked: point the mouse at the bobber and press your interact key to reel it. On by default in WoW: Forever." },
+      .. "Unticked: point the mouse at the bobber and press your interact key to reel it. On by default in Classic." },
   ["set.reachSound"] = { title = "Out-of-reach alert",
     body = "When the bobber lands beyond the interact key's reach, show a message on screen and play a sound "
       .. "once, so you know to press again (recast) or point at it. Pick \"No sound (message only)\" to keep "

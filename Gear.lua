@@ -30,6 +30,12 @@ end
 local CLASSIC_GEAR = ((GetBuildInfo and (select(4, GetBuildInfo()))) or 120100) < 100000
 local INVSLOT_MH = INVSLOT_MAINHAND or 16
 SBF.CLASSIC_GEAR = CLASSIC_GEAR
+-- WoW: Forever on its own (classic gear layout, but the MAINLINE project id; every Classic client has its own id).
+-- Forever's interact key reaches every cast once the range is raised (2026-11-04), so the out-of-reach handling
+-- (Reach.lua) and its settings are Classic-only; Forever just raises the range while fishing and puts it back
+-- (SBF.ForeverReach, which also holds the slash-only way back to the Classic handling).
+local FOREVER = CLASSIC_GEAR and WOW_PROJECT_ID ~= nil and WOW_PROJECT_ID == (WOW_PROJECT_MAINLINE or 1)
+SBF.FOREVER = FOREVER
 function SBF.PoleSlot()
   if CLASSIC_GEAR then return INVSLOT_MH end
   return SBFDB.poleSlot or 28
@@ -332,6 +338,7 @@ local function reachYards()
   local v = SBFDB.bobberReach
   if v == 20 and not SBFDB._reachDefault60 then v = nil; SBFDB.bobberReach = nil end   -- one-time: the old ticked 20
   SBFDB._reachDefault60 = true
+  if SBF.ForeverReach() then return REACH_DEFAULT end   -- Forever: always raised while fishing, no setting
   if v == nil then v = CLASSIC_GEAR and REACH_DEFAULT or 0 end
   return tonumber(v) or 0
 end
@@ -387,7 +394,7 @@ function SBF.CameraViewSlot()
   local s = tonumber(SBFDB.reachViewSlot)
   return (s and s >= 2 and s <= 5) and s or 5
 end
-function SBF.UseSavedCamera() return SBFDB.reachCamera == "saved" end
+function SBF.UseSavedCamera() return not SBF.ForeverReach() and SBFDB.reachCamera == "saved" end   -- Forever: no reach camera
 function SBF.SaveFishingCamera()
   if not SaveView then return end
   local slot = SBF.CameraViewSlot()

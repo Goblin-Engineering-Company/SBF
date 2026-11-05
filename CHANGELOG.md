@@ -1,43 +1,27 @@
-# SBF 2026.10.20.1
+# SBF 2026.11.05.1
 
-**SBF 2026.10.20.1: The Pet Project**
+**SBF 2026.11.05.1: Nothing Up Our Sleeves**
 
-**Your pet gets a say.**
+**The minimap button has a face again.**
 
-Hunters and warlocks, this one's yours. Settings has a new Pet section, saved per character, so your demon's orders don't follow your mage around. Everything in it starts off.
+A player sent in a bug report with a screenshot of an empty circle where the SBF button should be. Their minimap button addon had politely asked us to stop hand-building our own button. Fair. Our button's "icon" was the word SBF written on a dark circle, and button collectors only keep a real picture, so they kept nothing.
 
-- **Pet stance while fishing.** Pick Passive, Defensive, Assist or Aggressive (whichever your game has). When you press your fishing key out of combat and your pet is on some other stance, SBF puts it back. It finds the stance on your pet bar wherever you keep it, because the goblins know you rearranged it. SBF doesn't change the stance back when you stop fishing.
-- **Fight when my pet is fighting.** If your pet is attacking something and you aren't in combat yet, your fishing key sends your Combat action instead of casting. Needs something in the Combat slot.
-- **Target what my pet is attacking first.** When the key fights for your pet, it targets your pet's enemy first. If you already have a hostile target, it keeps yours. Untick it if your own combat macro picks its target.
+SBF now uses the standard minimap button library that everyone else uses, with a proper SBF badge: the letters, back where they belong, in brass on a real picture this time. It shows up in button collectors and minimap skins, and it shows up as a launcher in data broker bars too. Your button stays where you dragged it, and "Hide the minimap button" still works. The goblins were told that words typed on a button are not an icon. They painted the words onto a picture and called it a loophole. We allowed it.
 
-A player on Forever asked for this one, and the goblins were glad to help. The pets were less glad. They liked standing there.
+**Forever: the bobber is in reach now.**
 
-**Your fishing key fights back.**
+On WoW: Forever the interact key used to give up on far casts, so SBF had a whole kit for it: an "out of reach" alert and sound, a recast mode, a point-at-it-with-your-mouse mode, a camera tip and a saved fishing camera. With Forever live, the key reaches your bobber once SBF stretches its range, so all of that is gone on Forever:
 
-Something jumps you while your line is in the water? Your fishing key now reels in its ambitions, drops the line and fights for the rest of the fight, the same as retail. Before, the key stayed stuck on looting until the fight was over, and your character just stood there holding a pole at the problem. Rather keep the key on looting, in case a fish bites mid-brawl? Untick "Fight instead of looting when combat starts" under Settings, Fishing behavior. Needs something in the Combat slot, which every character has unless you cleared it.
+- No more "Bobber out of reach" messages or sounds.
+- The Bobber reach section is gone from Settings.
+- A saved fishing camera from the beta isn't switched to anymore. Your camera is all yours.
 
-**Hunters shoot now (Forever).**
+SBF still stretches your interact range while you fish and puts your own setting back when you stop. That part is always on now, with nothing to set. If you turned it off during the beta, it's back on, because that's the bit that does the reaching.
 
-On Forever the default Combat action used to be melee auto-attack only, which is a bold choice for someone holding a bow. Hunters on the default now get both: you swing when something is in your face, and Auto Shot fires when it isn't. Up close you may see a "Target too close" message from the shot line. It's harmless, and the goblins are working on their people skills. One press is enough; Auto Shot keeps going on its own. Existing characters move over on their own, and a combat macro you dragged in yourself is left alone.
-
-**Our advice: bring your own combat macro (Forever).**
-
-Forever has no Single-Button Assistant, so SBF's default combat action can only auto-attack. That's fine for scaring off a rabbit and not much else. Anything with teeth will win. If you fish anywhere dangerous, make a WoW macro with your class's real attacks and drag it into the Combat (attack) slot. SBF runs it whenever you're in combat, from the same fishing key. One example, from a low-level hunter:
-
-```
-/startattack
-/cast Raptor Strike
-/castsequence reset=target/combat Serpent Sting, Concussive Shot, Arcane Shot, Arcane Shot
-```
-
-Raptor Strike lands when something is in your face, and the shots fire when it isn't. Warlocks, swap in your own spells. Your demon will appreciate the help.
-
-**Empty corpses stop holding you hostage (Forever).**
-
-Forever now opens a loot window even when a corpse has nothing on it. With Ultra fast loot on, that empty window stayed open where you couldn't see it, and your character stood there "looting" until you walked away. SBF now closes an empty window by itself.
+The goblins kept the old kit in a crate out back, just in case. If a Thursday patch ever shortens the key again, type `/sbf reach classic` and the out-of-reach handling and its settings come back. `/sbf reach forever` puts them back in the crate.
 
 **Small fixes.**
 
-- The Buffs and Boat slots now take a spell when you click the slot while holding it, not only by dragging.
-- On Forever, a fight that started soon after you stopped fishing could throw up "Interface action failed because of an AddOn". SBF now waits for the fight to end before it puts your interact range back.
-- The slot tooltips say what each slot actually takes. The Buffs one used to promise macros. It lied. We had words with it.
+- `/sbf reach` on Forever tells you the range SBF uses. `/sbf reachmode` and `/sbf reachview` tell you they aren't needed there, instead of changing a setting that does nothing.
+- On retail, `/sbf reachview` tells you the fishing camera is a Classic option.
+- The "Out of reach" tooltip on the Stats tab only sends you to Settings when there's a Bobber reach section to find.

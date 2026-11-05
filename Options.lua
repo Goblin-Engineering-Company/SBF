@@ -1772,7 +1772,7 @@ local function Build()
       { check = C("Hide the minimap button",
           function() return SBFDB.minimap and SBFDB.minimap.hide end,
           function(v)
-            SBFDB.minimap = SBFDB.minimap or { pos = 220 }
+            SBFDB.minimap = SBFDB.minimap or {}
             SBFDB.minimap.hide = v and true or nil
             if SBF.ApplyMinimapVisibility then SBF.ApplyMinimapVisibility() end
           end, "set.hideMinimap") },
@@ -1814,7 +1814,7 @@ local function Build()
       },
     },
 
-    -- Bobber reach (Reach.lua). WoW: Forever / Classic only. The two mode boxes are exclusive: ticking one clears
+    -- Bobber reach (Reach.lua). Classic only (hidden on retail and WoW: Forever). The two mode boxes are exclusive: ticking one clears
     -- the other; with neither ticked a far bobber is reeled by pointing at it with the mouse.
     { section = "Bobber reach", hidden = not (SBF.ShowReachSettings and SBF.ShowReachSettings()),
       { note = { text = "The bobber has to land where your camera can see it. Zoomed all the way in or looking "
@@ -2575,7 +2575,8 @@ local function Build()
       ol:SetText(("Out of reach: |cffe0b050%d|r of %d line-outs (%s)   recast: %d   |cff808080left out of casts, avg cast and catch rate|r")
         :format(oorN, lineOuts, pct, kc.unreachable or 0))
       Theme.Font(ol, "textDim")
-      tipAcquire(W - PAD * 2, 16, "Out of reach", "Casts whose bobber landed beyond the interact key's reach. Recast ones are logged as 'out of reach' and left out of casts and catch rate. Ones you still reeled in by pointing at them count as their real outcome. Settings, Bobber reach."):SetPoint("TOPLEFT", PAD, y)
+      tipAcquire(W - PAD * 2, 16, "Out of reach", "Casts whose bobber landed beyond the interact key's reach. Recast ones are logged as 'out of reach' and left out of casts and catch rate. Ones you still reeled in by pointing at them count as their real outcome."
+        .. ((SBF.ShowReachSettings and SBF.ShowReachSettings()) and " Settings, Bobber reach." or "")):SetPoint("TOPLEFT", PAD, y)
       y = y - 18
     end
 

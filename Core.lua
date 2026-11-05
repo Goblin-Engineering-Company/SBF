@@ -240,7 +240,7 @@ local DB_DEFAULTS = {
   prSoundFile = "Interface\\AddOns\\SBF\\sounds\\YAY.mp3",   -- bundled "Yay" (needs a full game restart to load)
   prBuffName = "Patiently Rewarded",
   bgAlpha = 0.94,       -- window background opacity (Options slider)
-  minimap = { pos = 220 },  -- minimap button angle (degrees around the ring)
+  minimap = { minimapPos = 220 },  -- minimap button (LibDBIcon db): angle in degrees around the ring, + hide
   -- Mouse double-click fishing: fire SBF's secure fishing button (and optionally loot/interact) from a
   -- DOUBLE-CLICK of a chosen mouse button, WITHOUT stealing normal single clicks. See SBF.MouseInit /
   -- the GLOBAL_MOUSE_DOWN handler below: a double-click momentarily arms a secure override binding so the
@@ -3083,57 +3083,30 @@ function SBF.AnnounceProfile(id)
 end
 
 ----------------------------------------------------------------- minimap button --
--- Self-contained minimap button (no library). Draggable around the ring; angle saved
--- in SBFDB.minimap.pos. Click toggles the SBF options window.
+-- Standard LibDBIcon button fed by an LDB launcher, so minimap-button collectors and skins pick it up
+-- with its icon, and broker bars list it too. Angle + hide live in SBFDB.minimap (minimapPos / hide,
+-- the LibDBIcon field names). The launcher is not named "SBF": that LDB name is the Feed data source.
+local LAUNCHER = "SingleButtonFishing"
+
 function SBF.CreateMinimapButton()
-  if not Minimap or _G.SBFMinimapButton then return end
-  SBFDB.minimap = SBFDB.minimap or { pos = 220 }
+  local DBIcon = LibStub and LibStub("LibDBIcon-1.0", true)
+  local LDB = LibStub and LibStub("LibDataBroker-1.1", true)
+  if not (DBIcon and LDB) or DBIcon:IsRegistered(LAUNCHER) then return end
+  SBFDB.minimap = SBFDB.minimap or {}
   local db = SBFDB.minimap
-  local btn = CreateFrame("Button", "SBFMinimapButton", Minimap)
-  btn:SetFrameStrata("MEDIUM"); btn:SetFrameLevel(8); btn:SetSize(28, 28)
-  btn:RegisterForClicks("LeftButtonUp", "RightButtonUp"); btn:RegisterForDrag("LeftButton")
+  if db.pos then db.minimapPos = db.pos % 360; db.pos = nil end   -- carry the old hand-built button's angle over
 
-  local bg = btn:CreateTexture(nil, "BACKGROUND")
-  bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background"); bg:SetSize(18, 18)
-  bg:SetPoint("TOPLEFT", 6, -5)
-  local fs = btn:CreateFontString(nil, "ARTWORK")
-  fs:SetFont(STANDARD_TEXT_FONT, 8, "OUTLINE"); fs:SetTextColor(0.27, 0.77, 0.63)
-  fs:SetPoint("CENTER", bg, "CENTER", 0, 0); fs:SetText("SBF")  -- centered on the icon
-  local border = btn:CreateTexture(nil, "OVERLAY")
-  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder"); border:SetSize(48, 48)
-  border:SetPoint("TOPLEFT")
-
-  local atan2 = math.atan2 or math.atan   -- 5.1 has atan2; newer Lua: atan(y, x)
-  local function place()   -- snap to the ring at the saved angle
-    local a = math.rad(db.pos or 220)
-    local r = (Minimap:GetWidth() / 2) + 6   -- sit just outside the ring, any minimap size
-    btn:ClearAllPoints()
-    btn:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
-  end
-  btn:SetScript("OnDragStart", function(self)
-    self:LockHighlight()
-    self:SetScript("OnUpdate", function(frame)   -- follow the cursor exactly while dragging
-      local scale = Minimap:GetEffectiveScale()
-      local cx, cy = GetCursorPosition()
-      local mx, my = Minimap:GetCenter()
-      cx, cy = cx / scale - mx, cy / scale - my
-      frame:ClearAllPoints()
-      frame:SetPoint("CENTER", Minimap, "CENTER", cx, cy)
-      db.pos = math.deg(atan2(cy, cx))
-    end)
-  end)
-  btn:SetScript("OnDragStop", function(self)
-    self:SetScript("OnUpdate", nil); self:UnlockHighlight(); place()   -- snap onto the ring
-  end)
-  btn:SetScript("OnClick", function() if SBF.ToggleOptions then SBF.ToggleOptions() end end)
-  btn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-    GameTooltip:SetText("Single-Button Fishing")
-    GameTooltip:AddLine("Click to open · drag to move", 0.9, 0.9, 0.9)
-    GameTooltip:Show()
-  end)
-  btn:SetScript("OnLeave", GameTooltip_Hide)
-  place()
+  local obj = LDB:GetDataObjectByName(LAUNCHER) or LDB:NewDataObject(LAUNCHER, {
+    type = "launcher",
+    label = "Single-Button Fishing",
+    icon = "Interface\\AddOns\\SBF\\art\\icon",   -- the SBF badge
+    OnClick = function() if SBF.ToggleOptions then SBF.ToggleOptions() end end,
+    OnTooltipShow = function(tt)
+      tt:AddLine("Single-Button Fishing")
+      tt:AddLine("Click to open · drag to move", 0.9, 0.9, 0.9)
+    end,
+  })
+  DBIcon:Register(LAUNCHER, obj, db)
   SBF.ApplyMinimapVisibility()
 end
 
@@ -3142,9 +3115,9 @@ end
 -- Hiding is only ever a display choice: `/sbf` opens the window and the AddOns compartment entry below is
 -- always present, so there is no way to strand yourself with no route back into the addon.
 function SBF.ApplyMinimapVisibility()
-  local btn = _G.SBFMinimapButton
-  if not btn then return end
-  if SBFDB.minimap and SBFDB.minimap.hide then btn:Hide() else btn:Show() end
+  local DBIcon = LibStub and LibStub("LibDBIcon-1.0", true)
+  if not (DBIcon and DBIcon:IsRegistered(LAUNCHER)) then return end
+  if SBFDB.minimap and SBFDB.minimap.hide then DBIcon:Hide(LAUNCHER) else DBIcon:Show(LAUNCHER) end
 end
 
 -- ============================ AddOns compartment (the minimap's addon list) ============================
@@ -3168,7 +3141,7 @@ function SBF_OnAddonCompartmentLeave() GameTooltip:Hide() end
 
 -- one toggle used by both surfaces (the compartment's right-click and the Settings checkbox)
 function SBF.ToggleMinimapButton()
-  SBFDB.minimap = SBFDB.minimap or { pos = 220 }
+  SBFDB.minimap = SBFDB.minimap or {}
   SBFDB.minimap.hide = (not SBFDB.minimap.hide) or nil
   SBF.ApplyMinimapVisibility()
   if SBF.RefreshOptions then SBF.RefreshOptions() end
@@ -3846,16 +3819,26 @@ SlashCmdList.SBF = function(msg)
           .. tostring(fil or 0))
       end
     end
+  elseif cmd == "reach" and SBF.FOREVER and (rest:lower() == "classic" or rest:lower() == "forever") then
+    SBFDB.foreverReach = rest:lower() == "classic" and "classic" or nil   -- the way back if a patch shortens the key
+    print(SBFDB.foreverReach and "|cff45c4a0SBF|r Classic bobber reach is on: far casts are handled the Classic way. "
+      .. "/reload to see Settings, Bobber reach. |cff808080(/sbf reach forever to go back)|r"
+      or "|cff45c4a0SBF|r Back to the Forever bobber reach. /reload to tidy up Settings.")
+  elseif cmd == "reach" and SBF.ForeverReach() then           -- Forever: always raised, nothing to set
+    print(("|cff45c4a0SBF bobber reach|r: %d yards while fishing (always on in WoW: Forever)  "
+      .. "|cff808080(far casts stopped reeling? /sbf reach classic)|r"):format(SBF.ReachYards()))
   elseif cmd == "reach" then                                  -- PUBLIC: interact-key range while fishing
     local v = rest:lower()
     if v == "off" then SBFDB.bobberReach = 0; if SBF.RestoreBobberReach then SBF.RestoreBobberReach() end
     elseif v == "default" then SBFDB.bobberReach = nil        -- bare /sbf reach just prints the current value
     elseif tonumber(v) then SBFDB.bobberReach = math.max(0, math.floor(tonumber(v))) end
     print(("|cff45c4a0SBF bobber reach|r: %s  |cff808080(/sbf reach <yards> | off | default)|r"):format(
-      (SBFDB.bobberReach == nil and "default (60 on Forever/Classic, off on retail)")
+      (SBFDB.bobberReach == nil and "default (60 on Classic, off on retail)")
       or (SBFDB.bobberReach == 0 and "off - your interact range is left alone") or (SBFDB.bobberReach .. " yards while fishing")))
+  elseif (cmd == "reachview" or cmd == "reachmode") and SBF.ForeverReach() then
+    print("|cff45c4a0SBF|r Not needed on WoW: Forever: the interact key reaches every cast.")
   elseif cmd == "reachview" and not SBF.CLASSIC_GEAR then
-    print("|cff45c4a0SBF|r The fishing camera is a WoW: Forever option.")   -- retail: never touch the player's views
+    print("|cff45c4a0SBF|r The fishing camera is a Classic option.")   -- retail: never touch the player's views
   elseif cmd == "reachview" then                              -- PUBLIC: the saved fishing camera (on/off, save, which slot)
     local v = rest:lower()
     if v == "on" then SBFDB.reachCamera = "saved"

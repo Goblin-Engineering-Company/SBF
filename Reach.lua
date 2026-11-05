@@ -1,22 +1,26 @@
 -- Reach.lua — what SBF does when the fishing bobber lands beyond the interact key's reach.
 --
--- The interact key only reels a bobber the client will soft-target, and on WoW: Forever that stops short of the
--- farthest casts no matter what (probed 2026-09-23: SoftTargetInteractRange accepted 60, arc 0-2 made no difference,
--- camera tilt made no difference, a MOUSE click still reels them). Gear.lua raises the range while fishing; this
+-- The interact key only reels a bobber the client will soft-target, and on Classic (and on WoW: Forever during its
+-- beta) that stops short of the farthest casts no matter what (probed 2026-09-23: SoftTargetInteractRange accepted
+-- 60, arc 0-2 made no difference, camera tilt made no difference, a MOUSE click still reels them). Gear.lua raises the range while fishing; this
 -- file handles the bobbers that are still out of reach, per SBFDB.reachMode:
 --   "recast"    = the next press drops the line and recasts (the cast is logged as its own "unreachable" kind,
---                 outside the cast percentages; see Stats). Default on WoW: Forever / Classic.
+--                 outside the cast percentages; see Stats). Default on Classic.
 --   "mouseover" = the interact keys (and the fishing key in one-button mode) become Blizzard's Interact with
 --                 Mouseover: point at the bobber and press.
---   "off"       = leave the keys alone. Default on retail.
+--   "off"       = leave the keys alone. Default on retail, and always on WoW: Forever.
 -- An optional alert (SBFDB.reachSound: the on-screen message plus a sound, or the message alone) fires once per
 -- out-of-reach cast.
 -- (no addon-namespace use: everything here hangs off the SBF global)
 SBF = SBF or {}
 
--- Bobber reach is a WoW: Forever / Classic feature: that's where the interact key can't reach every cast. Its
--- Settings section shows only on those clients, and every mode defaults to off on retail.
-function SBF.ShowReachSettings() return SBF.CLASSIC_GEAR == true end
+-- Bobber reach is a Classic feature: that's where the interact key can't reach every cast. Its Settings section
+-- shows only there. Retail defaults to off; WoW: Forever is always off (its key reaches every cast once Gear.lua
+-- raises the range, 2026-11-04), so a mode saved on Forever before then is ignored.
+-- If a patch ever shortens Forever's key again, `/sbf reach classic` (SBFDB.foreverReach = "classic") brings the
+-- Classic handling and its settings back on Forever, and `/sbf reach forever` goes back. Slash only, no checkbox.
+function SBF.ForeverReach() return SBF.FOREVER == true and SBFDB.foreverReach ~= "classic" end
+function SBF.ShowReachSettings() return SBF.CLASSIC_GEAR == true and not SBF.ForeverReach() end
 
 -- The modes this build knows (an unknown saved value falls back to the default), which of them turn the interact
 -- keys into Interact with Mouseover, and the on-screen alert each one shows. Tables, so a mode can be added from
@@ -30,6 +34,7 @@ SBF.REACH_ALERT.recast = "Bobber out of reach - press to recast"
 SBF.REACH_ALERT.mouseover = "Bobber out of reach - point at it and press"
 
 function SBF.ReachMode()
+  if SBF.ForeverReach() then return "off" end
   local m = SBFDB.reachMode
   if m == nil or not SBF.REACH_MODES[m] then m = SBF.CLASSIC_GEAR and "recast" or "off" end
   return m
