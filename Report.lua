@@ -77,6 +77,80 @@ local function itemState(id)
   return isToy and count <= 0 and "ready (toy)" or ("ready  x%d"):format(count)
 end
 
+-- Every profile, not just the active one, plus the gear state: which profile is active, which one this location
+-- picks, which ones carry a gear set or pole, and whether SBF thinks the fishing gear is on. Profile and gear set
+-- NAMES are typed by the player, so they're left out: ids and yes/no only. Bound locations are game zone names.
+-- Read-only: the per-character gear record is read directly (SBF.ProfileGear would create one).
+local function profileLines(out)
+  local DB = SBF.Store and SBF.Store()
+  if not (DB and DB.profiles) then return end
+  local w = SBF.working
+  local active, default = w and w.id or DB.activeProfile, DB.defaultProfile
+  local here = SBF.ResolveProfile and SBF.ResolveProfile()
+  local n = 0
+  for _ in pairs(DB.profiles) do n = n + 1 end
+  out[#out + 1] = ("profiles: %d  active=%s default=%s thisLocationPicks=%s  autoSwap=%s advanced=%s"):format(n,
+    tostring(active), tostring(default), (#((SBF.LocationCascade and SBF.LocationCascade()) or {}) > 0) and tostring(here) or "?",
+    tostring(SBFDB.autoSwap ~= false),
+    tostring(SBFDB.advancedMode ~= false))
+  local casc = {}
+  for _, e in ipairs((SBF.LocationCascade and SBF.LocationCascade()) or {}) do casc[#casc + 1] = tostring(e.name) end
+  out[#out + 1] = "          here: " .. (#casc > 0 and table.concat(casc, " > ") or "(location not read)")
+  if #casc == 0 then here = nil end   -- nothing read: ResolveProfile only fell back to the default, no alarm
+  if SBFDB.autoSwap ~= false and here and active and here ~= active then
+    out[#out + 1] = "          <<< the active profile isn't the one this location picks (picked by hand, or a missed swap)"
+  end
+
+  local cg = SBF.CharGear and SBF.CharGear() or {}
+  local scope = (SBF.IsIndividual and SBF.IsIndividual()) and "i:" or "a:"
+  local function itemCount(id)
+    return (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(id)) or (GetItemCount and GetItemCount(id)) or 0
+  end
+  local function setState(name, isActive)
+    if not name then return "no" end
+    local id = C_EquipmentSet and C_EquipmentSet.GetEquipmentSetID(name)
+    if id == nil then return "yes(not on this character)" end
+    local _, _, _, isEquipped, _, _, _, numLost = C_EquipmentSet.GetEquipmentSetInfo(id)
+    local sbf = isActive and SBF.SetWornPerSBF and (" wornPerSBF=" .. tostring(SBF.SetWornPerSBF(name) and true or false)) or ""
+    return ("yes(worn=%s%s missing=%s)"):format(tostring(isEquipped and true or false), sbf, tostring(numLost or 0))
+  end
+  local function poleState(pole)
+    if not pole then return "no" end
+    local worn = SBF.PoleSlot and GetInventoryItemID("player", SBF.PoleSlot()) == pole
+    return ("yes(owned=%s worn=%s)"):format(tostring(itemCount(pole) > 0 or worn or false), tostring(worn or false))
+  end
+  local ids = {}
+  for id in pairs(DB.profiles) do ids[#ids + 1] = id end
+  table.sort(ids, function(a, b)
+    if a == b then return false end
+    if a == default then return true elseif b == default then return false end
+    if a == active then return true elseif b == active then return false end
+    return tostring(a) < tostring(b)
+  end)
+  local MAX = 20
+  for i, id in ipairs(ids) do
+    if i > MAX then out[#out + 1] = ("          ...and %d more"):format(#ids - MAX); break end
+    local p = DB.profiles[id]
+    -- the active profile's gear comes from the working copy (it may hold unsaved edits); the rest from this
+    -- character's saved record
+    local g = (id == active and w) or (cg.cfg and cg.cfg[scope .. tostring(id)]) or {}
+    local tags = {}
+    if id == default then tags[#tags + 1] = "default" end
+    if id == active then tags[#tags + 1] = "active" end
+    local binds = {}
+    for _, b in ipairs(p.bindings or {}) do binds[#binds + 1] = ("%s(%s)"):format(tostring(b.value), tostring(b.kind or "?")) end
+    out[#out + 1] = ("  %-4s %-15s gearSet=%s pole=%s  bound=%s"):format(tostring(id), table.concat(tags, ","),
+      setState(g.equipSet, id == active), poleState(g.pole), #binds > 0 and table.concat(binds, ", ") or "none")
+  end
+
+  local snap = 0
+  for _ in pairs(cg.snapshot or {}) do snap = snap + 1 end
+  out[#out + 1] = ("gear    : fishingGearOn=%s normalGearSaved=%s  idleRestore=%s after %ss  pending=%s editingSet=%s"):format(
+    tostring(cg.on and true or false), snap > 0 and ("yes(" .. snap .. " slots)") or "no",
+    tostring(SBFDB.idleRestoreEnabled and true or false), tostring(SBFDB.idleRestoreSeconds or 30),
+    tostring(SBF._gearPending or "-"), tostring(SBF._emEditing and true or false))
+end
+
 local function slotLines(out)
   -- Walk the DESCRIPTOR list, not ActiveSlots: combat/heal live per-CHARACTER (SBF.CharSlots), so iterating
   -- the profile's working slots silently omitted them from every report — a combat-macro bug was invisible in
@@ -353,18 +427,19 @@ function SBF.BugReport(note)
   local proj = _G.WOW_PROJECT_ID
   local flavor = (proj and FLAVORS[proj]) or (proj and ("unknown flavor id " .. tostring(proj))) or "unknown"
   local gameVer, build, _, iface = GetBuildInfo()   -- gameVer: `ver` is the addon version upvalue above
-  -- WoW: Forever reports the MAINLINE project id but runs the classic-style gear layout (interface < 100000).
-  if SBF.CLASSIC_GEAR and flavor == "Retail" then flavor = "WoW: Forever" end
+  -- WoW: Forever: the one detection in Gear.lua (its project id has changed once already; it reads as an
+  -- unknown id here otherwise).
+  if SBF.FOREVER then flavor = ("WoW: Forever (project %s)"):format(tostring(proj)) end
   out[#out + 1] = ("wow    : %s %s (build %s)  interface %s  locale %s"):format(
     flavor, tostring(gameVer), tostring(build), tostring(iface),
     tostring(GetLocale and GetLocale() or "?"))
   if SBF.CLASSIC_GEAR then   -- bobber reach state (Forever / Classic): the setting SBF raises + the mode
     local r = SBF.ReachState and SBF.ReachState() or {}
-    out[#out + 1] = ("reach  : mode=%s yards=%s applied=%s live range=%s  camera=%s view=%s saved=%s"):format(
+    out[#out + 1] = ("reach  : mode=%s yards=%s applied=%s live range=%s  camera=%s view=%s saved=%s  override=%s"):format(
       tostring(SBF.ReachMode and SBF.ReachMode()), tostring(SBF.ReachYards and SBF.ReachYards()),
       tostring(r.on and true or false), tostring(GetCVar and GetCVar("SoftTargetInteractRange")),
       (SBF.UseSavedCamera and SBF.UseSavedCamera()) and "saved" or "off",
-      tostring(SBF.CameraViewSlot and SBF.CameraViewSlot()), tostring(SBFDB.reachViewSaved))
+      tostring(SBF.CameraViewSlot and SBF.CameraViewSlot()), tostring(SBFDB.reachViewSaved), tostring(SBFDB.foreverReach))
   end
   -- class + level only: they gate spells (boat spells, heals) and are not identifying. NO name/realm/guild.
   localeLines(out)
@@ -376,6 +451,10 @@ function SBF.BugReport(note)
     (SBF.IsIndividual and SBF.IsIndividual()) and "individual" or "warband",
     tostring(SBF.IsDirty and SBF.IsDirty() or false),
     tostring((ns.Catalog and ns.Catalog.generated) or "?"))
+  do
+    local okP, err = pcall(profileLines, out)
+    if not okP then out[#out + 1] = "profiles: (could not read: " .. tostring(err) .. ")" end
+  end
   out[#out + 1] = ("state  : %s  next=%s"):format(
     tostring(SBF.GetState and SBF.GetState() or "?"), tostring(SBF.GetNext and SBF.GetNext() or "?"))
   -- The dynamic override IS the loot key. When someone reports "the loot key does nothing", this line and

@@ -1,27 +1,33 @@
-# SBF 2026.11.05.1
+# SBF 2026.11.11.1
 
-**SBF 2026.11.05.1: Nothing Up Our Sleeves**
+**SBF 2026.11.11.1: Stay Where We Put You**
 
-**The minimap button has a face again.**
+**Your profile stays put.**
 
-A player sent in a bug report with a screenshot of an empty circle where the SBF button should be. Their minimap button addon had politely asked us to stop hand-building our own button. Fair. Our button's "icon" was the word SBF written on a dark circle, and button collectors only keep a real picture, so they kept nothing.
+A player told us their gear loadout worked for a few minutes, then started flipping back to default. They were right, and it was us. Every time you pressed the fishing key, SBF asked which profile belongs to the spot you're standing in. A profile you picked by hand, and didn't bind to a zone, isn't anyone's answer to that question, so SBF swapped you back to your default profile on the next cast. Your gear set went with it.
 
-SBF now uses the standard minimap button library that everyone else uses, with a proper SBF badge: the letters, back where they belong, in brass on a real picture this time. It shows up in button collectors and minimap skins, and it shows up as a launcher in data broker bars too. Your button stays where you dragged it, and "Hide the minimap button" still works. The goblins were told that words typed on a button are not an icon. They painted the words onto a picture and called it a loophole. We allowed it.
+It only started after you saved, which is why it looked fine while you were still setting things up.
 
-**Forever: the bobber is in reach now.**
+Now a profile you pick stays picked until you move to another zone or subzone, or log back in. Walk into a zone you've bound a profile to and SBF still switches for you, same as always. It also checks right away when you turn auto-swap back on, delete the profile you're using, or switch between Warband and Individual profiles, so you land on the profile that belongs where you're standing. The goblin responsible has been reassigned to the bait shop, where nothing moves unless you move it.
 
-On WoW: Forever the interact key used to give up on far casts, so SBF had a whole kit for it: an "out of reach" alert and sound, a recast mode, a point-at-it-with-your-mouse mode, a camera tip and a saved fishing camera. With Forever live, the key reaches your bobber once SBF stretches its range, so all of that is gone on Forever:
+**Forever: the bobber reach handling is actually off now.**
 
-- No more "Bobber out of reach" messages or sounds.
-- The Bobber reach section is gone from Settings.
-- A saved fishing camera from the beta isn't switched to anymore. Your camera is all yours.
+The last update said that on WoW: Forever, SBF stops worrying about bobbers out of reach and hides the Bobber reach settings. On your end, none of that happened. SBF works out which game it's in when it loads, and our check for Forever was written against the beta, which introduced itself differently than the live game does. So SBF decided you were playing Classic and kept running all the Classic reach handling.
 
-SBF still stretches your interact range while you fish and puts your own setting back when you stop. That part is always on now, with nothing to set. If you turned it off during the beta, it's back on, because that's the bit that does the reaching.
+It recognizes Forever properly now, and here is exactly what that changes on Forever:
 
-The goblins kept the old kit in a crate out back, just in case. If a Thursday patch ever shortens the key again, type `/sbf reach classic` and the out-of-reach handling and its settings come back. `/sbf reach forever` puts them back in the crate.
+- Pressing the fishing key on a bobber that's out of reach no longer recasts for you. Forever's interact key reaches your casts on its own.
+- The out-of-reach alert, its sound and the mouseover switching are gone, and so is the Bobber reach section in Settings.
+- SBF no longer switches to your saved fishing camera when you start fishing. Your camera is yours.
+- SBF still raises the interact range to 60 yards while you fish and puts yours back when you stop. There's no setting for it on Forever, so if you had turned the raise off or picked your own distance, that choice no longer applies there.
+- The out-of-reach count on the Stats tab only shows on Classic now.
 
-**Small fixes.**
+If a future patch ever shortens Forever's reach again, `/sbf reach classic` brings all of the Classic handling back, and `/sbf reach forever` turns it off again. Those two commands only start working on Forever with this update. Classic players: nothing changes for you.
 
-- `/sbf reach` on Forever tells you the range SBF uses. `/sbf reachmode` and `/sbf reachview` tell you they aren't needed there, instead of changing a setting that does nothing.
-- On retail, `/sbf reachview` tells you the fishing camera is a Classic option.
-- The "Out of reach" tooltip on the Stats tab only sends you to Settings when there's a Bobber reach section to find.
+**One flash, not two.**
+
+Switching profile and putting that profile's gear on in the same press flashed the profile name twice on top of itself. Once is plenty.
+
+**Better bug reports.**
+
+`/sbf bug` now lists every profile you have: which one is active, which one is your default, which one the spot you're standing in would pick, whether each one has a gear set and a pole, and which zones it's bound to. For your active profile it shows whether the game thinks the set is on and whether SBF does, since SBF leaves the pole out of that check when your profile brings its own pole. It also says whether SBF thinks your fishing gear is on, and on Forever it now says WoW: Forever instead of an unknown game. Profile and gear set names stay out of it, the same as your character name. If your gear or profile ever does something odd, that one paste tells us why.

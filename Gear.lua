@@ -30,11 +30,19 @@ end
 local CLASSIC_GEAR = ((GetBuildInfo and (select(4, GetBuildInfo()))) or 120100) < 100000
 local INVSLOT_MH = INVSLOT_MAINHAND or 16
 SBF.CLASSIC_GEAR = CLASSIC_GEAR
--- WoW: Forever on its own (classic gear layout, but the MAINLINE project id; every Classic client has its own id).
+-- WoW: Forever on its own: the classic gear layout, on a project id that is NOT one of the Classic clients'. Keyed
+-- on "not a Classic project" rather than on Forever's own number, because that number has already changed once:
+-- the beta reported the MAINLINE id (1), live Forever reports 18. An "== MAINLINE" test reads live Forever as
+-- Classic.
 -- Forever's interact key reaches every cast once the range is raised (2026-11-04), so the out-of-reach handling
 -- (Reach.lua) and its settings are Classic-only; Forever just raises the range while fishing and puts it back
 -- (SBF.ForeverReach, which also holds the slash-only way back to the Classic handling).
-local FOREVER = CLASSIC_GEAR and WOW_PROJECT_ID ~= nil and WOW_PROJECT_ID == (WOW_PROJECT_MAINLINE or 1)
+local CLASSIC_PROJECTS = {}
+for _, k in ipairs({ "WOW_PROJECT_CLASSIC", "WOW_PROJECT_BURNING_CRUSADE_CLASSIC", "WOW_PROJECT_WRATH_CLASSIC",
+  "WOW_PROJECT_CATACLYSM_CLASSIC", "WOW_PROJECT_MISTS_CLASSIC" }) do
+  if _G[k] then CLASSIC_PROJECTS[_G[k]] = true end
+end
+local FOREVER = CLASSIC_GEAR and WOW_PROJECT_ID ~= nil and not CLASSIC_PROJECTS[WOW_PROJECT_ID]
 SBF.FOREVER = FOREVER
 function SBF.PoleSlot()
   if CLASSIC_GEAR then return INVSLOT_MH end
@@ -704,7 +712,7 @@ end
 -- Is the named equipment set CURRENTLY equipped? (C_EquipmentSet exposes a live isEquipped flag, so we can
 -- detect when the player changed gear out from under us — manually or otherwise.) True when there's nothing
 -- to enforce (no set, or the set no longer exists), so a missing set never forces a re-equip.
-local function setEquipped(name)
+local function setEquipped(name, quiet)   -- quiet: read-only (the bug report), no missing-piece warning
   local id, isEquipped, numInBags, numLost = setInfo(name)
   if not id then return true end                               -- no set / set deleted: nothing to enforce
   local skip = poleSkipSlots(id)
@@ -719,12 +727,12 @@ local function setEquipped(name)
     for slot in pairs(setEmptySlots(id, skip)) do              -- a slot the set keeps empty still has something in it
       if GetInventoryItemID("player", slot) and freeBag() then return false end
     end
-    if short > 0 then warnMissing(name, short) end
+    if short > 0 and not quiet then warnMissing(name, short) end
     return true
   end
   if isEquipped then return true end
   if numLost > 0 and numInBags == 0 then                       -- everything you still own is on; only missing pieces left
-    warnMissing(name, numLost)
+    if not quiet then warnMissing(name, numLost) end
     return true
   end
   return false
@@ -811,9 +819,7 @@ local function applyProfileGear()
   -- the user thinks in; its gear set is just one of its settings. ONCE per gear change: on Forever the pole-only
   -- first step skips it, so the flash comes with the set on the second press (the same single flash retail gives
   -- for its one combined press). A profile with a pole and no set still flashes on its only step.
-  if SBFDB.swapFlash and RaidNotice_AddMessage and not poleOnlyStep then
-    RaidNotice_AddMessage(RaidWarningFrame, "SBF :: "..(w.name or "fishing"), { r = 1, g = 0.82, b = 0 })
-  end
+  if not poleOnlyStep and SBF.FlashProfile then SBF.FlashProfile(w.name or "fishing") end
 end
 
 -- Does the active profile manage gear that ISN'T currently worn? The PreClick uses this to decide whether
@@ -824,6 +830,8 @@ function SBF.GearNeedsEquipIgnoringEdit()
   if not (w.equipSet or w.pole) then return false end
   return not (setEquipped(w.equipSet) and poleEquipped(w.pole))
 end
+-- The active profile's set as SBF judges it (pole slots skipped when the profile owns its pole), read-only.
+function SBF.SetWornPerSBF(name) return setEquipped(name, true) end
 function SBF.GearNeedsEquip()
   if SBF._emEditing then return false end   -- suspended while editing the set in the Equipment Manager
   return SBF.GearNeedsEquipIgnoringEdit()

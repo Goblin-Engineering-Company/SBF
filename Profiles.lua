@@ -69,6 +69,7 @@ function SBF.SetScope(individual)
   SBF.working = nil                      -- force LoadWorking to rebuild from the new store
   local st = SBF.Store()
   SBF.LoadWorking(st.activeProfile or st.defaultProfile)
+  if SBF.RecheckProfile then SBF.RecheckProfile() end   -- the new store's profile for this location
   if SBF.RefreshOptions then SBF.RefreshOptions() end
   if SBF.Apply then SBF.Apply() end
 end
@@ -424,7 +425,10 @@ function SBF.RemoveProfile(id)
   if id == DB.defaultProfile then return false, "Can't remove the default profile." end
   if not DB.profiles[id] then return false, "No such profile." end
   DB.profiles[id] = nil
-  if DB.activeProfile == id then SBF.LoadWorking(DB.defaultProfile) end
+  if DB.activeProfile == id then
+    SBF.LoadWorking(DB.defaultProfile)
+    if SBF.RecheckProfile then SBF.RecheckProfile() end   -- land on this location's profile, not just Default
+  end
   return true
 end
 
@@ -439,9 +443,9 @@ end
 -- ===== location bindings + resolution =====
 -- A binding is a NAMED location: { value = <name>, kind = "continent"|"zone"|"area" } stored on the
 -- STORED profile (SBFDB.profiles[id].bindings). Bindings COMMIT INSTANTLY — they are deliberately NOT
--- part of the working-copy/Save/Revert cycle, because the auto-swap engine (ResolveProfile, re-run on
--- every cast press + zone change) reads the stored bindings: a save-gated binding wouldn't hold the
--- profile you just bound, and the next cast would swap you back to Default, wasting casts. So bindings
+-- part of the working-copy/Save/Revert cycle, because the auto-swap engine (ResolveProfile, re-run when
+-- the location changes, checked on zone events and cast presses) reads the stored bindings: a save-gated
+-- binding wouldn't hold the profile you just bound after your next move. So bindings
 -- are "wiring", applied the moment you click Bind/x; slots/gear/name stay save-gated. SaveWorking/
 -- LoadWorking/WorkingChanges do NOT touch bindings (an earlier SaveWorking snapshot-commit silently
 -- clobbered fresh bindings — the "binding didn't save" bug). MATCHING is by `value` (name) only; `kind`
@@ -565,6 +569,21 @@ function SBF.OnZoneMaybeChanged()
     return
   end
   SBF.DoSwap(target, firstRun)
+end
+
+-- Check the location once more even though it hasn't changed: after turning auto-swap on, deleting the active
+-- profile, or switching Warband/Individual, the profile you land on may not be this location's. `false` (not nil)
+-- so the check runs but still counts as a normal swap, not a login one.
+function SBF.RecheckProfile()
+  SBF._lastCascadeKey = false
+  SBF.OnZoneMaybeChanged()
+end
+
+-- The profile step of a fishing-key press (Core's PreClick). It runs the same debounced location check the zone
+-- events run, so a profile picked by hand holds until you move. Re-resolving on every press instead swapped a
+-- saved, unbound profile back to Default on the next cast, gear set and all (player report, 2026-11-06).
+function SBF.PressProfileStep()
+  SBF.OnZoneMaybeChanged()
 end
 
 -- Apply a resolved swap: load the working copy + arm the gear (Phase 5 consumes the flag) + feedback.

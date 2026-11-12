@@ -2453,14 +2453,10 @@ function SBF.Apply()
         return
       end
 
-      -- Self-correct the active profile: if auto-swap is on and a different profile resolves for where we
-      -- are (e.g. the login resolution ran before the map loaded and stuck on Default), switch now so the
-      -- right gear/config is used. Skip while dirty (don't discard unsaved edits on a press; the zone
-      -- prompt owns that path). Runs BEFORE the gear gate so the gate then equips the correct profile's gear.
-      if SBFDB.autoSwap and not SBF.IsDirty() and SBF.ResolveProfile then
-        local target = SBF.ResolveProfile()
-        if target and SBF.working and target ~= SBF.working.id then SBF.DoSwap(target) end
-      end
+      -- Catch a location change the zone events missed (e.g. the login resolution ran before the map loaded and
+      -- stuck on Default), so the right gear/config is used (Profiles.lua SBF.PressProfileStep: a hand-picked
+      -- profile holds until you move). Runs BEFORE the gear gate so the gate equips the right gear.
+      if SBF.PressProfileStep then SBF.PressProfileStep() end
 
       -- Focus fishing audio: starting to fish reconfigures WoW's sound (isolate the bobber splash, mute
       -- music/ambience). Parallel to gear — applied on a press, restored on idle/stop/login. No-op unless
@@ -3073,13 +3069,21 @@ end
 -- Feedback when an auto-swap loads a new profile: flash the profile's name as a raid warning
 -- (gated on SBFDB.swapFlash). The on-screen indicator (Buttons page) is refreshed separately by
 -- SBF.RefreshOptions; this is the transient "you swapped" cue. Safe no-op for a missing id.
+-- The one profile flash, shared with the gear-on flash (Gear.lua). A press that switches profile AND puts that
+-- profile's gear on used to flash the name twice at once; the same name in the same frame now shows once.
+local lastFlash, lastFlashAt
+function SBF.FlashProfile(name)
+  if not (SBFDB.swapFlash and RaidNotice_AddMessage) then return end
+  local now = GetTime()
+  if name == lastFlash and now == lastFlashAt then return end
+  lastFlash, lastFlashAt = name, now
+  -- gold (not the default red), and "::" instead of the U+2192 arrow (which renders as a black box)
+  RaidNotice_AddMessage(RaidWarningFrame, "SBF :: " .. tostring(name), { r = 1, g = 0.82, b = 0 })
+end
 function SBF.AnnounceProfile(id)
   local DB = SBF.Store()
   local p = id and DB.profiles[id]; if not p then return end
-  if SBFDB.swapFlash and RaidNotice_AddMessage then
-    -- gold (not the default red), and "::" instead of the U+2192 arrow (which renders as a black box)
-    RaidNotice_AddMessage(RaidWarningFrame, "SBF :: " .. (p.name or "?"), { r = 1, g = 0.82, b = 0 })
-  end
+  SBF.FlashProfile(p.name or "?")
 end
 
 ----------------------------------------------------------------- minimap button --

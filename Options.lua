@@ -707,8 +707,8 @@ local function Build()
   -- Bind the selected profile to a level of where you're standing, so the auto-swap engine activates it
   -- when you return. The location hierarchy is VARIABLE-DEPTH (SBF.LocationCascade): one Bind button per
   -- level, rebuilt each refresh. Bindings COMMIT INSTANTLY to the stored profile (not save-gated, no
-  -- dirty flag): auto-swap re-resolves on every cast press from the STORED bindings, so a save-gated
-  -- binding would let the very next cast swap you back to Default. Save/Revert never touch bindings.
+  -- dirty flag): auto-swap re-resolves from the STORED bindings whenever the location changes, so a
+  -- save-gated binding would let your next move swap you back to Default. Save/Revert never touch bindings.
   -- Most-specific (deepest) match wins at resolve time.
   local blbl = pBtn:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
   -- y is 6px lower than the bind-button row's top so the short label centers vertically on the 22px buttons
@@ -1802,7 +1802,10 @@ local function Build()
           end, "set.advancedMode"), id = "adv" },
       { id = "advSub", hidden = (SBFDB.advancedMode == false),
         { check = C("Auto-swap profiles by location",
-            function() return SBFDB.autoSwap ~= false end, function(v) SBFDB.autoSwap = v end, "set.autoSwap") },
+            function() return SBFDB.autoSwap ~= false end, function(v)
+              SBFDB.autoSwap = v
+              if v and SBF.RecheckProfile then SBF.RecheckProfile() end   -- swap now if this spot has its own profile
+            end, "set.autoSwap") },
         { check = C("Ask to save unsaved changes when closing SBF",
           function() return SBFDB.warnUnsavedOnClose ~= false end,
           function(v) SBFDB.warnUnsavedOnClose = v and true or false end, "set.warnUnsavedOnClose") },
@@ -2567,7 +2570,8 @@ local function Build()
     -- out-of-reach metric (Reach.lua): how many line-outs landed beyond the interact key's reach. Deliberately OUTSIDE
     -- the cast/catch-rate numbers above: a recast "unreachable" cast never had a fair chance, and one reeled by
     -- pointing at it is already counted by its real outcome. Shown once any have been seen.
-    if (roll.oor or 0) > 0 or (kc.unreachable or 0) > 0 then
+    -- Only where the reach handling runs (Classic): on Forever and retail the history would sit there frozen.
+    if SBF.ShowReachSettings and SBF.ShowReachSettings() and ((roll.oor or 0) > 0 or (kc.unreachable or 0) > 0) then
       local lineOuts = casts + (kc.unreachable or 0)
       local oorN = roll.oor or 0
       local pct = lineOuts > 0 and string.format("%d%%", math.floor(oorN / lineOuts * 100 + 0.5)) or "-"
