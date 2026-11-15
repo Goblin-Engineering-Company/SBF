@@ -1653,7 +1653,7 @@ local function Build()
               if SBF.Apply then SBF.Apply() end
               -- looting in this mode rides the game's interact key; make sure the client option backing
               -- it ("Enable interact key" / softTargetInteract) is on the moment the mode is chosen
-              if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar() end
+              if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar(v and "two-button-chosen" or "two-button-off") end
             end, "set.twoButton"), grow = 1 },
         { check = C("Enable controller (gamepad) support",
             function() return SBFDB.gamepadEnable and true or false end,

@@ -213,12 +213,15 @@ local BEHAVIOUR_KEYS = {
   "warnNoPole", "warnUnsavedOnClose", "guardFishingOff", "restoreMaxTries", "restoreRetryDelay",
   -- combat-key handover and the Forever default combat action
   "combatReleasesLoot", "combatRangedAuto", "rangedAutoSpells", "petStanceMaxTries", "combatLockedCVars",
+  -- the interact key notice (a silenced notice explains a player who "never saw" it)
+  "interactNotice", "interactNoticeMinutes",
 }
 -- Settings whose DEFAULT is on (stored as nil until explicitly turned off, read with `~= false`). A nil
 -- here means "on", so silently omitting them would misreport the config — the reader can't tell an absent
 -- key from an off one.
 local DEFAULT_ON = { showUnownedItems = true, showUnownedToys = true, showWarbandItems = true,
-  warnNoPole = true, warnUnsavedOnClose = true, guardFishingOff = true, combatRangedAuto = true, combatReleasesLoot = true }
+  warnNoPole = true, warnUnsavedOnClose = true, guardFishingOff = true, combatRangedAuto = true, combatReleasesLoot = true,
+  interactNotice = true }
 
 -- tostring() on a table prints an ADDRESS, which is noise in a report and differs every session
 -- (`fallingBoats=table: 0x9db116570` in the first real report). Render something a human can read.
@@ -485,7 +488,44 @@ function SBF.BugReport(note)
     -- mode implies the option (EnsureInteractKeyCVar asserts it), so anything but 3 here on a two-button
     -- report means the assert itself is failing - also worth knowing.
     local sti = (C_CVar and C_CVar.GetCVar and C_CVar.GetCVar("softTargetInteract")) or "?"
-    out[#out + 1] = ("          softTargetInteract=%s (3=always; two-button looting needs 3)"):format(tostring(sti))
+    out[#out + 1] = ("          softTargetInteract=%s (3=always; SBF looting needs 3)"):format(tostring(sti))
+    -- interact key history (kept across reloads). pcall'd: a hand-edited SavedVariables must not cut the
+    -- report off part-way.
+    local okI, errI = pcall(function()
+      local mean = SBF.InteractMeaning or tostring
+      -- every time SBF found it wrong and tried to set it back. "by" is the addon caught calling SetCVar for
+      -- that change; "unknown" means no Lua caller was seen (the game itself, or before SBF loaded).
+      local ilog = SBFDB and SBFDB.interactCvarLog
+      if type(ilog) == "table" and #ilog > 0 then
+        out[#out + 1] = ("          SBF tried to set the interact key back to 3 %d time(s) total; last %d:"):format(
+          tonumber(SBFDB.interactCvarTotal) or #ilog, math.min(#ilog, 10))
+        for i = math.max(1, #ilog - 9), #ilog do
+          local e = ilog[i]
+          if type(e) == "table" then
+            out[#out + 1] = ("            %s  was %s (%s) by %s  [%s, %s-button]  SBF set 3 -> %s%s"):format(
+              date("%m-%d %H:%M", tonumber(e.t) or 0), tostring(e.from), mean(e.from), tostring(e.by or "unknown"),
+              tostring(e.trig), tostring(e.mode), tostring(e.to), e.ok and "" or "  <<< DIDN'T STICK")
+          end
+        end
+      end
+      -- every change made by something else, fishing or not (idle ones are only counted): who, to what, how often
+      local seen = SBFDB and SBFDB.interactCvarSeen
+      if type(seen) == "table" and next(seen) then
+        local rows = {}
+        for _, r in pairs(seen) do if type(r) == "table" then rows[#rows + 1] = r end end
+        table.sort(rows, function(x, y)
+          if (x.n or 0) ~= (y.n or 0) then return (x.n or 0) > (y.n or 0) end
+          return (x.last or 0) > (y.last or 0)
+        end)
+        out[#out + 1] = "          interact key changed away from 3 by:"
+        for i = 1, math.min(#rows, 8) do
+          local r = rows[i]
+          out[#out + 1] = ("            %s -> %s (%s)  x%d, last %s"):format(tostring(r.by), tostring(r.val),
+            mean(r.val), tonumber(r.n) or 0, date("%m-%d %H:%M", tonumber(r.last) or 0))
+        end
+      end
+    end)
+    if not okI then out[#out + 1] = "          interact history: (could not read: " .. tostring(errI) .. ")" end
     -- the loot key is NOT a native binding - it exists only as an override SBF applies.
     -- "no key bound" or "->|NONE|" on the interact line IS the dead-loot-key report.
     -- GECBind is a FILE-LOCAL in every consumer, never a global — reading it here was always nil, so this

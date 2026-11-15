@@ -106,6 +106,15 @@ local DB_DEFAULTS = {
   requireTwoButtons = false, -- two-button mode: the action key only casts; loot via the loot key.
                              -- Choosing it also IMPLIES the game's "Enable interact key" option stays on
                              -- (EnsureInteractKeyCVar) - looting rides that option, no separate toggle.
+  interactNotice = true,     -- say in chat (ONE line) when SBF had to put the game's interact key setting back.
+                             -- false = never say it; SBF still fixes it and /sbf bug still lists every change.
+  interactNoticeMinutes = 0, -- repeat that line at most once per this many minutes. 0 = once per session, which
+                             -- is the default: players blamed SBF for "spam" when another addon kept changing it.
+  interactFightMax = 5,      -- an addon that changes the interact key straight back after every fix: this many
+  interactFightWindow = 10,  -- fixes inside this many seconds mid-run pauses the mid-run fixes for
+  interactFightPause = 30,   -- this many seconds (fishing presses still fix it)
+  interactWriterWindow = 600, -- seconds a caught SetCVar caller stays the suspect for the next fix
+  interactStackDepth = 20,   -- call-stack lines read to find which addon changed it
   gamepadEnable = false, -- "Enable controller support": ticking sets the GamePadEnable CVar to "1" so
                          -- controller buttons generate PAD* binding tokens SBF can bind. Unticking leaves
                          -- the CVar alone (the user may use the gamepad elsewhere). May need a /reload.
@@ -2271,45 +2280,235 @@ end
 -- the same dependency, so the assert now covers it too. The one case that genuinely doesn't need the CVar: a
 -- single-button interact SLOT carrying a custom action or a non-Interact game binding - that press never
 -- touches soft-targeting, so we leave the player's client setting alone.
--- Re-asserted at login, when two-button mode is switched on, on every action press (PreClick), on
--- CVAR_UPDATE (the accidental mid-session uncheck) and when combat ends (it never writes during combat). Our own SetCVar re-fires CVAR_UPDATE; the cur == 3
--- early-return ends that loop.
-function SBF.EnsureInteractKeyCVar()
+-- WHEN IT'S SET: on EVERY fishing press (PreClick: one GetCVar, a write only when it's wrong), when two-button
+-- mode is chosen, and, while a fishing run is active, right after anything else changes it and when combat ends
+-- if a fix was skipped for combat (two-button looting uses the game's own Interact key, which never passes
+-- through SBF, so a change between casts would leave the loot key dead). NOT while idle: outside a fishing run
+-- another addon's changes are only counted, so SBF never tugs at the setting while you're not fishing.
+--
+-- WHEN SOMETHING KEEPS CHANGING IT (field reports 2026-11-14: players got the old "turned the interact key back
+-- on" line over and over, because another addon kept changing it, and blamed SBF for chat spam): SBF fixes it
+-- silently and says so in chat ONCE per session by default (SBFDB.interactNoticeMinutes;
+-- SBFDB.interactNotice = false silences it, no UI on purpose). That line says what the value was changed TO and, when an addon
+-- did it through SetCVar, WHICH addon (a hook on SetCVar reads the caller's folder from the stack). Restores land
+-- in SBFDB.interactCvarLog (last INTERACT_LOG_KEEP) and foreign changes in SBFDB.interactCvarSeen (one counter
+-- per who+value, last INTERACT_SEEN_KEEP), both kept across reloads, so /sbf bug shows them. The write is read
+-- back: a value that won't stick gets its own notice instead of being claimed as fixed. A fight-back addon
+-- can't drive a per-frame loop: mid-run fixes are deferred a frame, coalesced, and capped (interactFight*).
+local INTERACT_LOG_KEEP = 20
+local INTERACT_SEEN_KEEP = 30
+local INTERACT_MEANING = { [0] = "off", [1] = "controller only", [2] = "keyboard and mouse only", [3] = "always" }
+local function interactMeaning(v)
+  local n = tonumber(v)
+  return (n and INTERACT_MEANING[n]) or ("unknown value " .. tostring(v))
+end
+SBF.InteractMeaning = interactMeaning
+local function cfgNum(k, d) local v = SBFDB and tonumber(SBFDB[k]); return v or d end
+local interactWriting = false   -- true while SBF's own SetCVar runs, so the hook below doesn't blame us
+local lastWriter                -- { by = who, val = value, at = GetTime() } of the latest foreign write
+
+-- Who called SetCVar("softTargetInteract", ...). The stack is read top-down, line by line: the first addon
+-- folder that isn't SBF or Blizzard's wins; a /run, macro or compiled string (no addon file) reads as a script;
+-- only when neither shows up is it the game's own interface. Blizzard folders can't win early because the
+-- global SetCVar is itself a Blizzard Lua wrapper around C_CVar.SetCVar and sits right on top of the caller.
+-- Never returns stack text (a script could carry anything the player typed): only a folder name, sanitized.
+-- The game's own checkbox (Blizzard_SettingsDefinitions_Frame) also goes through that wrapper, so the FIRST
+-- Blizzard folder is always the wrapper's: any Blizzard settings folder anywhere on the stack means "the options".
+local function writerFromStack()
+  local st = debugstack and debugstack(3, cfgNum("interactStackDepth", 20), 0) or ""
+  local blizz, settings
+  for line in st:gmatch("[^\n]+") do
+    local folder = line:match("AddOns[/\\]([^/\\]+)[/\\]")
+    if folder then
+      if folder:find("^Blizzard_") then
+        blizz = blizz or folder
+        if folder:find("Settings", 1, true) then settings = true end
+      elseif folder ~= "SBF" then return (folder:gsub("[^%w_%-%.]", ""):sub(1, 40)) end
+    elseif line:find('[string "', 1, true) and not line:find("Interface", 1, true) then
+      return "a script (/run or macro)"
+    end
+  end
+  if settings then return "the game's options" end
+  if blizz or st:find("SharedXML") or st:find("FrameXML") then return "the game's own interface" end
+  return nil
+end
+-- cheap first: this runs on EVERY SetCVar in the game
+local function isInteractName(n)
+  if type(n) ~= "string" then return false end
+  local len = #n
+  if len ~= 18 and len ~= 20 then return false end   -- softTargetInteract / SOFT_TARGET_INTERACT
+  return n:lower():gsub("_", "") == "softtargetinteract"
+end
+local function normValue(v)
+  if type(v) == "boolean" then return v and "1" or "0" end   -- what the game stores for a boolean write
+  return tostring(v)
+end
+
+local function countSeen(by, val)
+  if not SBFDB then return end
+  local seen = SBFDB.interactCvarSeen or {}
+  SBFDB.interactCvarSeen = seen
+  local key = by .. "=" .. val
+  local row = seen[key]
+  if not row then
+    -- bounded: evict the stalest row (an addon that's since been uninstalled ages out)
+    local n, oldK, oldT = 0, nil, math.huge
+    for k, r in pairs(seen) do
+      n = n + 1
+      if type(r) ~= "table" or (r.last or 0) < oldT then oldK, oldT = k, type(r) == "table" and (r.last or 0) or -1 end
+    end
+    if n >= INTERACT_SEEN_KEEP and oldK then seen[oldK] = nil end
+    row = { by = by, val = val, n = 0 }
+    seen[key] = row
+  end
+  row.n, row.last = (row.n or 0) + 1, time()
+end
+
+local hookSeen = { at = -1, val = nil }   -- the C_CVar hook already counted this write (same frame + value)
+local function onSetCVar(viaGlobal, name, value)
+  if not isInteractName(name) then return end
+  local val = normValue(value)
+  if interactWriting and val == "3" then return end   -- SBF's own write
+  local now = GetTime()
+  -- global SetCVar wraps C_CVar.SetCVar on current clients, so the same write fires both hooks: count it once.
+  -- (Hooking both still covers a client where the global is its own function.)
+  if viaGlobal and hookSeen.at == now and hookSeen.val == val then return end
+  if not viaGlobal then hookSeen.at, hookSeen.val = now, val end
+  lastWriter = { by = writerFromStack() or "unknown", val = val, at = now }
+  if val ~= "3" then countSeen(lastWriter.by, val) end
+  if SBF.InteractChangedMidRun then SBF.InteractChangedMidRun() end
+end
+if hooksecurefunc then
+  if C_CVar and C_CVar.SetCVar then
+    pcall(hooksecurefunc, C_CVar, "SetCVar", function(n, v) onSetCVar(false, n, v) end)
+  end
+  if _G.SetCVar and _G.SetCVar ~= (C_CVar and C_CVar.SetCVar) then
+    pcall(hooksecurefunc, "SetCVar", function(n, v) onSetCVar(true, n, v) end)
+  end
+end
+
+local function interactLog(entry)
+  SBFDB.interactCvarLog = type(SBFDB.interactCvarLog) == "table" and SBFDB.interactCvarLog or {}
+  local log = SBFDB.interactCvarLog
+  log[#log + 1] = entry
+  while #log > INTERACT_LOG_KEEP do table.remove(log, 1) end
+  SBFDB.interactCvarTotal = (tonumber(SBFDB.interactCvarTotal) or 0) + 1
+end
+
+-- chat notices. "Turned back on" lines: the first this session always shows, later ones once per
+-- interactNoticeMinutes (0 = once per session); SBFDB.interactNotice = false silences them. A "couldn't" line
+-- (looting may be dead) has its OWN once-per-session slot and is never silenced: it's the one a player can act on.
+local notice = { ok = { held = 0 }, fail = { held = 0 } }
+local function interactNotice(kind, msg)
+  local n = notice[kind]
+  local now = GetTime()
+  if kind == "ok" then
+    if SBFDB.interactNotice == false then return end
+    local mins = cfgNum("interactNoticeMinutes", 0)
+    if n.at and (mins <= 0 or now - n.at < mins * 60) then n.held = n.held + 1 return end
+  elseif n.at then
+    n.held = n.held + 1 return
+  end
+  local extra = n.held > 0 and (" (%d more time%s since the last notice)"):format(n.held,
+    n.held == 1 and "" or "s") or ""
+  n.at, n.held = now, 0
+  print("|cff45c4a0SBF|r " .. msg .. extra)
+end
+
+-- Returns true when it actually wrote (the fight-back counter only counts real writes).
+function SBF.EnsureInteractKeyCVar(trigger)
+  -- re-entry: our SetCVar fires CVAR_UPDATE synchronously, and an addon that answers it with its own write would
+  -- otherwise ping-pong with us forever inside one call. The read-back below sees its value instead.
+  if interactWriting then return false end
   if not SBFDB.requireTwoButtons then
     -- single-button: needed unless the interact slot loots some OTHER way (custom action / custom binding)
     local s = SBF.ActiveSlots and SBF.ActiveSlots()
     local interact = s and s.interact
-    if hasAction(interact) then return end
-    if interact and interact.gameBinding and interact.gameBinding ~= "INTERACTTARGET" then return end
+    if hasAction(interact) then return false end
+    if interact and interact.gameBinding and interact.gameBinding ~= "INTERACTTARGET" then return false end
   end
   local get, set = C_CVar and C_CVar.GetCVar, C_CVar and C_CVar.SetCVar
-  if not (get and set) then return end
+  if not (get and set) then return false end
+  local raw = get("softTargetInteract")
+  if tonumber(raw) == 3 then return false end
   -- never in combat: soft-target settings are locked mid-fight and the refused write is blamed on SBF ("Interface
-  -- action failed"). The next out-of-combat press re-asserts it.
-  if InCombatLockdown and InCombatLockdown() then return end
-  local cur = tonumber(get("softTargetInteract"))
-  if cur == 3 then return end
-  local ok = pcall(set, "softTargetInteract", "3")
-  if ok then
-    if SBF.Anomaly then
-      SBF.Anomaly("interact-cvar-restored", "softTargetInteract was %s with interact-based looting in use "
-        .. "(%s-button mode) - raised to 3 (always)", tostring(cur), SBFDB.requireTwoButtons and "two" or "single")
-    end
-    print("|cff45c4a0SBF|r turned the game's |cffffd100interact key|r back on (Options > Controls > "
-      .. "\"Enable interact key\") - looting the bobber works through it.")
+  -- action failed"). Remember it, so leaving combat mid-run puts it right (the loot press never runs our PreClick).
+  if InCombatLockdown and InCombatLockdown() then SBF._interactAfterCombat = true return false end
+  SBF._interactAfterCombat = nil
+  local now = GetTime()
+  interactWriting = true
+  local ok, ret = pcall(set, "softTargetInteract", "3")
+  interactWriting = false
+  local after = get("softTargetInteract")
+  local stuck = tonumber(after) == 3
+  -- the foreign writer, if the SetCVar hook caught this exact change; used once, then forgotten, so a later
+  -- change nobody saw is never pinned on it
+  local by = (lastWriter and now - lastWriter.at < cfgNum("interactWriterWindow", 600)
+    and lastWriter.val == normValue(raw)) and lastWriter.by or nil
+  lastWriter = nil
+  local mode = SBFDB.requireTwoButtons and "two" or "single"
+  interactLog({ t = time(), from = tostring(raw), to = tostring(after), ok = stuck, by = by,
+                trig = trigger or "?", mode = mode })
+  if SBF.Anomaly then
+    SBF.Anomaly(stuck and "interact-cvar-restored" or "interact-cvar-refused",
+      "softTargetInteract was %s (%s), set by %s, trigger=%s, %s-button mode; wrote 3 -> now %s (pcall=%s ret=%s)",
+      tostring(raw), interactMeaning(raw), by or "unknown", trigger or "?", mode, tostring(after),
+      tostring(ok), tostring(ret))
   end
+  local byText = (by and by ~= "unknown") and (" by " .. by) or ""
+  if stuck then
+    interactNotice("ok", ("turned the game's |cffffd100interact key|r back on (it was changed to %s%s). Looting "
+      .. "needs it. SBF keeps it on while you fish; /sbf bug lists the changes."):format(interactMeaning(raw),
+      byText))
+  else
+    interactNotice("fail", ("couldn't turn the game's |cffffd100interact key|r back on (the game's \"Enable Interact Key\" "
+      .. "option). It's set to %s, so looting may not work until it's back on."):format(interactMeaning(after)))
+  end
+  return true
+end
+
+-- Something changed it while a fishing run is active: put it back on the NEXT frame (never inside the other
+-- addon's own call, so a synchronous fight-back can't recurse), one pending fix at a time. An addon answering
+-- every fix trips the fight-back cap (interactFightMax real writes inside interactFightWindow s): mid-run fixes
+-- pause for interactFightPause s, one re-check runs when the pause ends, and fishing presses fix it regardless.
+local reactPending, reactTimes, reactPausedUntil = false, {}, 0
+function SBF.InteractChangedMidRun()
+  if reactPending or not SBF.fishingModeActive or not (C_Timer and C_Timer.After) then return end
+  if GetTime() < reactPausedUntil then return end
+  reactPending = true
+  C_Timer.After(0, function()
+    reactPending = false
+    if not SBF.fishingModeActive then return end
+    if not SBF.EnsureInteractKeyCVar("changed-mid-run") then return end
+    local t = GetTime()
+    local window = cfgNum("interactFightWindow", 10)
+    while reactTimes[1] and t - reactTimes[1] > window do table.remove(reactTimes, 1) end
+    reactTimes[#reactTimes + 1] = t
+    if #reactTimes >= cfgNum("interactFightMax", 5) then
+      local pause = cfgNum("interactFightPause", 30)
+      reactPausedUntil, reactTimes = t + pause, {}
+      if SBF.Anomaly then
+        SBF.Anomaly("interact-cvar-fight", "softTargetInteract changed back %d times in %ss mid-run; pausing "
+          .. "mid-run fixes for %ss (fishing presses still fix it)", cfgNum("interactFightMax", 5), window, pause)
+      end
+      C_Timer.After(pause, function()
+        if SBF.fishingModeActive then SBF.EnsureInteractKeyCVar("fight-pause-ended") end
+      end)
+    end
+  end)
 end
 do
+  -- CVAR_UPDATE covers a change with no Lua caller (the game itself); the SetCVar hook above covers addons.
+  -- The name argument isn't reliably the cvar name (it's historically the event alias), so normalize it.
+  -- PLAYER_REGEN_ENABLED: a fix skipped for combat during a fishing run is done now (idle is still never touched).
   local f = CreateFrame("Frame")
   f:RegisterEvent("CVAR_UPDATE")
-  f:SetScript("OnEvent", function(_, _, name)
-    -- CVAR_UPDATE's first arg is historically the cvar's EVENT ALIAS, not the cvar name, and a live test
-    -- proved an exact-name match missed the options-panel uncheck entirely. Normalize case + underscores so
-    -- "softTargetInteract", "SOFT_TARGET_INTERACT" and friends all match. This watcher is best-effort now;
-    -- the per-press check in the fishing PreClick is the guarantee.
-    if SBF.EnsureInteractKeyCVar and name
-       and tostring(name):lower():gsub("_", "") == "softtargetinteract" then
-      SBF.EnsureInteractKeyCVar()
+  f:RegisterEvent("PLAYER_REGEN_ENABLED")
+  f:SetScript("OnEvent", function(_, event, name)
+    if event == "PLAYER_REGEN_ENABLED" then
+      if SBF._interactAfterCombat and SBF.fishingModeActive then SBF.EnsureInteractKeyCVar("combat-ended") end
+    elseif isInteractName(name) then
+      SBF.InteractChangedMidRun()
     end
   end)
 end
@@ -2435,11 +2634,10 @@ function SBF.Apply()
       SBF.fishingModeActive = true
       SBF.gearArmed = nil   -- legacy arm flag no longer gates anything; the gear gate below does
 
-      -- Two-button mode implies the game's "Enable interact key" option; verify it on EVERY press. The
-      -- CVAR_UPDATE watcher missed a live uncheck in testing (the event's name argument is not reliably
-      -- the cvar name), so the press is the guarantee: one GetCVar per press, a no-op when already right,
-      -- and the loot key can never stay dead longer than the next cast.
-      if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar() end
+      -- Looting rides the game's "Enable interact key" option: verify it on EVERY press (one GetCVar, a write
+      -- only when it's wrong). Silent after the session's first notice, so another addon that keeps changing it
+      -- costs a fix per press, not a chat line per press.
+      if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar("fishing-press") end
 
       -- Pet is fighting and the player isn't in combat yet (opt-in, per character): this press is the combat
       -- action, not a cast or a gear change. Once the player is in combat the macro below freezes on the button
@@ -3329,7 +3527,7 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     end
     SBF.ResetJumpSwitches()      -- public: clear any jump switch a user set before the command was removed
     SBF.MigrateBindsToNative()   -- lift old internal fishing/interact-controller binds into the native bindings
-    SBF.EnsureInteractKeyCVar()  -- two-button: the game's "Enable interact key" option must be on to loot
+    -- (the game's "Enable interact key" option is set by the fishing press, not here: see EnsureInteractKeyCVar)
     -- ...then verify the loot key survived it. Runs after the migration on purpose: the migration is the most
     -- likely thing to have taken the key away.
     if C_Timer and C_Timer.After then
@@ -3457,7 +3655,6 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     end
   elseif event == "PLAYER_REGEN_ENABLED" then
     if SBF._pending then SBF.Apply() end
-    if SBF.EnsureInteractKeyCVar then SBF.EnsureInteractKeyCVar() end   -- skipped in combat; put it right now
     if SBF.MouseClear then SBF.MouseClear() end   -- never carry a stale mouse override binding out of combat
     armHeal("combat")   -- left combat: heal to full
   end
