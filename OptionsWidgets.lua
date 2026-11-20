@@ -170,8 +170,8 @@ end
 
 -- THE one canonical GEC tooltip draw — every SBF tooltip goes through here so they're identical:
 -- ANCHOR_CURSOR (at the pointer, no per-row jumping/edge-flip), an ACCENT-coloured title (never the default
--- gold/yellow you get from a bare SetText), and a wrapped soft-grey body. Full convention: docs/wow-addons/
--- tooltip-style.md. Use this for ALL help text; only real game tooltips (SetItemByID/SetSpellByID) differ.
+-- gold/yellow you get from a bare SetText), and a wrapped soft-grey body. Use this for ALL help text; only
+-- real game tooltips (SetItemByID/SetSpellByID) differ.
 local function showTip(owner, title, body)
   if not (owner and title) then return end
   GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")

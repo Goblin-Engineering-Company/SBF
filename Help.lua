@@ -2,7 +2,7 @@
 -- Both the mouseover tooltips and the (future) help window call SBF.GetHelp("key"):
 --   * tooltips render `title` + `body` as plain text (GameTooltip = text + |cff|r colour, no HTML)
 --   * the help window renders longer markdown `body` text via the MD->SimpleHTML converter
---     (see docs/wow-addons/markdown-in-simplehtml.md for what markdown survives).
+--     (SimpleHTML only renders a small subset of markdown).
 -- Pure .lua: edit + /reload updates everything. (Adding this file to SBF.toc needs ONE client
 -- restart the first time; after that it is reload-only.)
 local _ = ...

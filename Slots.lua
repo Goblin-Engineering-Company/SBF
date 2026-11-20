@@ -1279,6 +1279,21 @@ end
 
 -- ===== macro building =====
 
+-- The "/cast" line for a non-macro slot def whose display name is `name`. A slot SPELL always lands on the
+-- player (SBF-007): a bare "/cast Thorns" with a vendor or another friendly targeted goes to the target (or
+-- fails out of range) and the press never reaches the fishing cast. Items and toys keep the bare form;
+-- defName reads item, then toy, then spell, so mirror that order here. Shared by the fishing press
+-- (actionLine) and a slot's own button (Core Configure), so a slot pressed on its own key self-casts too.
+-- `slotId` (optional) names the slot: a role="combat" slot is aimed at the enemy, so it keeps the bare form
+-- (QC 14 R1: Configure runs for every slot, and "/cast [@player] Cobra Shot" would fail on its own key).
+local function castLine(def, name, slotId)
+  local sd = slotId and SLOT_DEF[slotId]
+  if sd and sd.role == "combat" then return "/cast " .. name end
+  if def.spell and not def.item and not def.toy then return "/cast [@player] " .. name end
+  return "/cast " .. name
+end
+ns.castLine = castLine
+
 -- A fishing-action def -> a macro line, so we can prepend /sit. Items/toys/spells all go out as
 -- "/cast <name>" — it summons learned toys (incl. ones whose teaching item was consumed) where
 -- "/use" would look for a now-missing bag item and silently do nothing.
@@ -1293,12 +1308,13 @@ local function actionLine(def)
   -- line flows through, so the rule "never fire a spell you don't know" is enforced here, not per-caller.
   if def.spell and not spellUsable(def.spell) then return "" end
   local name = defName(def)
-  return name and ("/cast " .. name) or ""
+  if not name then return "" end
+  return castLine(def, name)
 end
 ns.actionLine = actionLine
 
 -- Guard a fallback block so NONE of it fires in combat: insert [nocombat] into each /use|/cast|
--- /castsequence line that doesn't already carry a condition. Lets the out-of-combat action sit
+-- /castsequence line (folded into each condition group when the line already carries one). Lets the out-of-combat action sit
 -- first in the macro without stealing the press mid-fight (one protected action per keypress).
 local function guardNoCombat(text)
   local out = {}
@@ -1307,7 +1323,17 @@ local function guardNoCombat(text)
     local lc = cmd and cmd:lower()
     if lc == "/use" or lc == "/cast" or lc == "/castsequence" then
       local rest = line:gsub("^%s*" .. cmd .. "%s*", "")
-      out[#out + 1] = (rest:sub(1, 1) == "[") and line or (cmd .. " [nocombat] " .. rest)
+      if rest:sub(1, 1) == "[" then
+        -- fold nocombat into every condition group (a self-cast spell line is "[@player] Name"); an empty
+        -- group becomes [nocombat], never [nocombat,]
+        rest = rest:gsub("%b[]", function(g)
+          local inner = g:sub(2, -2):match("^%s*(.-)%s*$")
+          return inner == "" and "[nocombat]" or ("[nocombat," .. inner .. "]")
+        end)
+        out[#out + 1] = cmd .. " " .. rest
+      else
+        out[#out + 1] = cmd .. " [nocombat] " .. rest
+      end
     else
       out[#out + 1] = line
     end
@@ -1542,6 +1568,7 @@ local FISHING_SEED_IDS  = { [131474] = true, [131476] = true,    -- what we SHIP
 local FISHING_SPELL_IDS = {}                                      -- seeds + whatever this character has
 for sid in pairs(FISHING_SEED_IDS) do FISHING_SPELL_IDS[sid] = true end
 local JOURNAL_SPELL_ID  = 271990
+local BAIT_AND_TACKLE_ID = 1278067   -- Forever: a second Fishing-profession spellbook entry that is NOT the cast
 local fishingNameCache
 local function scanFishingSpellbook()
   if not (GetProfessions and GetProfessionInfo and C_SpellBook and C_SpellBook.GetSpellBookItemInfo) then return end
@@ -1549,15 +1576,36 @@ local function scanFishingSpellbook()
   if not (ok and fishingIdx) then return end
   local ok2, _, _, _, _, numSpells, spellOffset = pcall(GetProfessionInfo, fishingIdx)
   if not (ok2 and numSpells and spellOffset) then return end
+  -- Not every entry at the Fishing profession's offset is the cast: the Journal never was, and Forever added
+  -- "Bait and Tackle" (1278067) beside Fishing (QC SB-1, 2026-11-11). Treating every entry as a cast put that
+  -- id in FISHING_SPELL_IDS (a false "UNSHIPPED CAST ID" in every Forever report) and made the cast NAME
+  -- depend on Fishing happening to be the last entry. So: the cast's name is whatever the client calls a SEED
+  -- id (locale-proof, it comes from the client), and an unseeded entry counts only when it carries that same
+  -- name (the 131476 case: a new id for the same ability).
+  local entries, castName = {}, nil
+  local function usable(nm) return nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) end
   for i = 1, numSpells do
     local info = C_SpellBook.GetSpellBookItemInfo(spellOffset + i, Enum.SpellBookSpellBank.Player)
     local sid, nm = info and (info.spellID or info.actionID), info and info.name
-    -- everything at the Fishing profession's offset EXCEPT the Journal is a fishing CAST for this character
-    if sid and sid ~= JOURNAL_SPELL_ID then
-      FISHING_SPELL_IDS[sid] = true
-      if nm and nm ~= "" and not (issecretvalue and issecretvalue(nm)) then fishingNameCache = nm end
+    if sid and sid ~= JOURNAL_SPELL_ID and sid ~= BAIT_AND_TACKLE_ID then
+      entries[#entries + 1] = { sid = sid, nm = nm }
+      if FISHING_SEED_IDS[sid] and usable(nm) then castName = nm end
     end
   end
+  if not castName and C_Spell and C_Spell.GetSpellName then
+    for sid in pairs(FISHING_SEED_IDS) do
+      local okN, nm = pcall(C_Spell.GetSpellName, sid)
+      if okN and usable(nm) then castName = nm break end
+    end
+  end
+  for _, e in ipairs(entries) do
+    -- no seed name resolved yet (data still loading): fall back to "every entry but the known non-casts"
+    if FISHING_SEED_IDS[e.sid] or not castName or e.nm == castName then
+      FISHING_SPELL_IDS[e.sid] = true
+      if not castName and usable(e.nm) then fishingNameCache = e.nm end
+    end
+  end
+  if castName then fishingNameCache = castName end
 end
 ns.scanFishingSpellbook = scanFishingSpellbook
 

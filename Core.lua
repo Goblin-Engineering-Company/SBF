@@ -345,7 +345,7 @@ local itemKey, curItemId = ns.itemKey, ns.curItemId
 
 -- load a slot's item/macro onto its secure button (macro wins if both set). Items
 -- and toys go through a "/use <name>" macro for the learn-vs-summon reason above.
-local function Configure(b, def)
+local function Configure(b, def, key)
   GECBind.RegisterSecureClicks(b)   -- keep the click edge matched to ActionButtonUseKeyDown on every (re)apply
   b:SetAttribute("type", nil)
   b:SetAttribute("item", nil); b:SetAttribute("macrotext", nil)
@@ -358,7 +358,7 @@ local function Configure(b, def)
     -- the Bat Visage Bobber) where "/use <name>" finds no bag item and does nothing.
     local name = defName(def)
     if name then
-      b:SetAttribute("type", "macro"); b:SetAttribute("macrotext", "/cast " .. name)
+      b:SetAttribute("type", "macro"); b:SetAttribute("macrotext", ns.castLine(def, name, key))   -- spells self-cast (SBF-007)
     elseif def.item and def.item ~= "" then
       b:SetAttribute("type", "item"); b:SetAttribute("item", "item:" .. (GetItemInfoInstant(def.item) or def.item))
     elseif def.toy then
@@ -1978,7 +1978,9 @@ castFailFrame:SetScript("OnEvent", function(_, ev, a, b)
     -- ONLY a "You receive loot:" line counts as a catch. Pushed ("You receive item:") / created ("You create:")
     -- lines are UI/inventory events (clicking a collectible, combining items) with no loot window — ignoring
     -- them stops non-fished items (e.g. a toy clicked in Collections) from being logged as a caught fish.
-    if a and isFishLootLine(a) then
+    -- A secret payload (WoW 12) reports type "string" but errors on any method call under addon taint, the
+    -- same class as the GECReader skill-up fix: skip it before isFishLootLine / :match touch it.
+    if a and not (issecretvalue and issecretvalue(a)) and isFishLootLine(a) then
       SBF._logCaughtT = GetTime()          -- timestamp the loot; attributed to a cast by its start time
       local item = {
         id = tonumber(a:match("Hitem:(%d+)")),
@@ -2562,7 +2564,7 @@ function SBF.Apply()
       -- or a key set in WoW's own Key Bindings (both via Bindings.xml). (This is also what attaches the
       -- fishing "brain" PreClick below — buttons.fishing must exist for the loop to drive a click-target.)
       local b = EnsureButton(key)
-      Configure(b, def)
+      Configure(b, def, key)
       -- OFF MUST MEAN OFF. `def.skip` gated the ROTATION (ComputeNext, Slots.lua:972) but NOT this: a slot
       -- with its own captured key kept that key override-bound while switched off, so pressing it fired the
       -- slot directly, bypassing ComputeNext entirely. That is the "chum1 is OFF and still throwing" bug —

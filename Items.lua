@@ -3,7 +3,7 @@
 -- future aggregator. Absorbs the old SBFDB.itemBuffs (buff name) + SBFDB.learned (slots/maps/allZones)
 -- and adds buffDuration + cooldown. Last-observed-wins: every observation overwrites + stamps `seen`.
 --
--- Record shape (see docs/superpowers/specs/2026-06-09-sbf-item-knowledge-db-design.md):
+-- Record shape:
 --   { name, buff, buffSpell, buffDuration, cooldown, castTime, slots = {slotType=true}, maps = {[mapID]=name},
 --     allZones, source = "learned"|"user-added", seen = <unix> }
 -- (buff = the buff's display name; buffSpell = its spellID identity — stable across locale/rename/secret.)

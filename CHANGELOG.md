@@ -1,21 +1,15 @@
-# SBF 2026.11.14.8
+# SBF 2026.11.19.3
 
-**SBF 2026.11.14.8: Quiet on the Docks**
+**SBF 2026.11.19.3: Wrong Target**
 
-**No more interact key spam.**
+A small bug-fix release, fresh off the repair bench.
 
-SBF loots your bobber through the game's interact key, so it checks that the "Enable interact key" option is on each time you press the fishing key, and puts it back if something turned it off. A few of you saw SBF's "turned the interact key back on" line over and over in chat. That was another addon changing the same setting, and SBF announcing every single time it put it back. It looked like SBF was the one making noise, and in a way it was.
+**Fishing works with a vendor targeted.** If you walked away from a vendor and started fishing without clearing your target, SBF could jam. A self-buff, heal or boat spell in one of your slots went to the vendor instead of you (or failed as out of range), and the key never got around to casting. The vendor did not need Thorns. Those spells now always land on you, whether the fishing key fires them or you press the slot on its own key, and your target is left alone. Your combat slot still goes at your enemy, and items and toys work as before.
 
-Now SBF still fixes it, but it only tells you once per session. That one line says what the setting was changed to and, when it can tell, which addon changed it, so you know where to look.
+**Custom macros stay out of fights.** If you put your own macro in a slot and set a combat action, the fishing key could fire that macro in the middle of a fight when its lines had their own [conditions], instead of your combat action. Its /cast and /use lines now wait until the fight is over, like every other slot. Fight first, fish later.
 
-A few other things changed along the way:
+**No more skill-up error.** Sometimes the "Your skill in Fishing has increased" message arrives in a protected form that addons aren't allowed to read. SBF tried to read it anyway and threw an error every time that message came in. It now leaves the sealed envelope alone. Your skill level still updates the next time you open the profession window. Thanks to the player who sent in the error report.
 
-- While you're fishing, SBF puts the setting back right after something changes it, so your loot key never goes dead between casts.
-- When you're not fishing, SBF leaves the setting alone. It no longer touches it when you log in.
-- If something changes it in the middle of a fight, SBF can't fix it until the fight is over, so it puts it back the moment combat ends instead of waiting for your next cast.
-- If another addon keeps fighting over it, SBF stops answering for a little while instead of trading blows every frame. Your next cast still fixes it.
-- If the game refuses the change, SBF says so instead of claiming it's fixed, and that warning always shows, because it means your loot key may not work.
+**WoW: Forever: the fishing cast is found more reliably.** Forever's Fishing has a second spellbook entry, "Bait and Tackle", and SBF could mistake it for the fishing cast. The tackle box has been labeled. It works on any game language.
 
-**Better bug reports.**
-
-`/sbf bug` now lists the last times SBF had to put the interact key back, what it had been changed to, and which addons have been changing it and how often. If your loot key ever stops working, that paste tells us who did it.
+The goblin who kept buffing the shopkeeper has been reassigned. The shopkeeper has filed no complaint.
